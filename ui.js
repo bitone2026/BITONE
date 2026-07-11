@@ -669,7 +669,7 @@ export function uiStockInfo(b) {
 export function uiCalcCoinSelect() {
   return new ContainerBuilder()
     .setAccentColor(0xffffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### <:emoji_36:1522771680379015378> 송금 계산기"))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 송금 계산기"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("**계산할 코인을 선택해주세요.**"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
