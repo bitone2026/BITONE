@@ -74,6 +74,10 @@ db.exec(`
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS auto_charge_custom_limits (
+    discord_id  TEXT PRIMARY KEY,
+    max_limit   INTEGER NOT NULL
+  );
 `);
 
 /* ============================================================
@@ -164,7 +168,17 @@ export const findByPhoneHash = findByPhone;
 
 // 조회 시 생년월일·전화번호 복호화해서 반환
 export function getVerifiedInfo(discordId) {
-  const row = db.prepare("SELECT * FROM verified_users WHERE discord_id = ?").get(discordId);
+  const row = db.prepare(`
+    SELECT
+      discord_id,
+      real_name AS realName,
+      birthday_enc,
+      phone_enc,
+      telecom,
+      verified_at
+    FROM verified_users
+    WHERE discord_id = ?
+  `).get(discordId);
   if (!row) return null;
   return {
     ...row,
@@ -222,6 +236,35 @@ export function resetDailyLimitFor(discordId) {
 }
 
 export { DAILY_LIMIT };
+
+/**
+ * 자동 충전 1회 한도 설정 (기본값 200,000원)
+ */
+export function getAutoChargeLimit() {
+  const limit = getConfig("auto_charge_limit");
+  return limit ? parseInt(limit, 10) : 200000;
+}
+
+export function setAutoChargeLimit(limit) {
+  setConfig("auto_charge_limit", limit);
+}
+
+/**
+ * 특정 유저의 자동 충전 1회 한도 설정
+ */
+export function getAutoChargeLimitFor(discordId) {
+  const row = db.prepare("SELECT max_limit FROM auto_charge_custom_limits WHERE discord_id = ?").get(discordId);
+  if (row) return row.max_limit;
+  return getAutoChargeLimit(); // 개별 설정 없으면 전체 기본값 반환
+}
+
+export function setAutoChargeLimitFor(discordId, limit) {
+  db.prepare("INSERT OR REPLACE INTO auto_charge_custom_limits (discord_id, max_limit) VALUES (?, ?)").run(discordId, limit);
+}
+
+export function resetAutoChargeLimitFor(discordId) {
+  db.prepare("DELETE FROM auto_charge_custom_limits WHERE discord_id = ?").run(discordId);
+}
 
 /* ============================================================
    포인트 관련
@@ -317,18 +360,18 @@ export function getSendHistory(discordId, limit = 10) {
 ============================================================ */
 
 export const GRADE_TIERS = [
-  { threshold: 20_000_000, roleId: "1523182081906315414", name: "GRADE 12", lounge: true },
-  { threshold: 15_000_000, roleId: "1523181735486165022", name: "GRADE 11", lounge: true },
-  { threshold: 10_000_000, roleId: "1523181324184322132", name: "GRADE 10", lounge: true },
-  { threshold:  8_000_000, roleId: "1523180335322632202", name: "GRADE 9",  lounge: true },
-  { threshold:  5_000_000, roleId: "1523180037791289374", name: "GRADE 8",  lounge: false },
-  { threshold:  4_000_000, roleId: "1523179745385119784", name: "GRADE 7",  lounge: false },
-  { threshold:  3_000_000, roleId: "1523179433958051961", name: "GRADE 6",  lounge: false },
-  { threshold:  2_000_000, roleId: "1523179067690455141", name: "GRADE 5",  lounge: false },
-  { threshold:  1_000_000, roleId: "1523178341492854914", name: "GRADE 4",  lounge: false },
-  { threshold:    500_000, roleId: "1523177478577848350", name: "GRADE 3",  lounge: false },
-  { threshold:    100_000, roleId: "1523176786681139230", name: "GRADE 2",  lounge: false },
-  { threshold:     10_000, roleId: "1523174407835484311", name: "GRADE 1",  lounge: false },
+  { threshold: 20_000_000, roleId: "1523182081906315414", name: "AURORA", lounge: true },
+  { threshold: 15_000_000, roleId: "1523181735486165022", name: "CRYSTAL", lounge: true },
+  { threshold: 10_000_000, roleId: "1523181324184322132", name: "EMERALD", lounge: true },
+  { threshold:  8_000_000, roleId: "1523180335322632202", name: "DIAMOND",  lounge: true },
+  { threshold:  5_000_000, roleId: "1523180037791289374", name: "RUBY",  lounge: false },
+  { threshold:  4_000_000, roleId: "1523179745385119784", name: "SSPPHIRE",  lounge: false },
+  { threshold:  3_000_000, roleId: "1523179433958051961", name: "JADE",  lounge: false },
+  { threshold:  2_000_000, roleId: "1523179067690455141", name: "PLATINUM",  lounge: false },
+  { threshold:  1_000_000, roleId: "1523178341492854914", name: "GOLD",  lounge: false },
+  { threshold:    500_000, roleId: "1523177478577848350", name: "SILVER",  lounge: false },
+  { threshold:    100_000, roleId: "1523176786681139230", name: "BONZE",  lounge: false },
+  { threshold:     10_000, roleId: "1523174407835484311", name: "WOOD",  lounge: false },
 ];
 
 export function getGrade(totalSpent) {
