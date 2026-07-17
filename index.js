@@ -1,7 +1,13 @@
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from "discord.js";
 import dotenv from "dotenv";
 dotenv.config();
-import { handleInteraction, updateStockMessage, restoreStockMessage, notifyPublicRestock, addBlacklist, removeBlacklist } from "./handlers.js";
+
+// 💡 startPushbulletStream 함수를 가져오도록 추가했습니다.
+import { 
+  handleInteraction, updateStockMessage, restoreStockMessage, 
+  notifyPublicRestock, addBlacklist, removeBlacklist, startPushbulletStream 
+} from "./handlers.js";
+
 import { checkAndNotifyRestock } from "./wallet.js";
 import { restoreFromEventLog } from "./dbBackup.js";
 import { setClient } from "./dbEventLog.js";
@@ -16,6 +22,7 @@ export const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
 });
+
 /* ============================================================
    슬래시 커맨드
 ============================================================ */
@@ -90,19 +97,24 @@ const COMMANDS = [
     .addStringOption(o => o.setName("유저").setDescription("디스코드 유저 ID").setRequired(true))
     .addIntegerOption(o => o.setName("한도").setDescription("새 일일한도(원). 생략하면 기본값으로 초기화").setRequired(false))
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("자동충전한도")
+    .setDescription("자동 충전 1회 최대 한도를 설정합니다 (관리자 전용)")
+    .addUserOption(o => o.setName("유저").setDescription("한도를 설정할 유저 (생략 시 전체 기본값 변경)").setRequired(false))
+    .addIntegerOption(o => o.setName("금액").setDescription("설정할 한도 금액(원). 유저 지정 시 생략하면 초기화").setRequired(false))
+    .toJSON(),
 ];
+
 /* ============================================================
    이벤트
 ============================================================ */
 client.once("ready", async () => {
   console.log(`✅ 봇 로그인: ${client.user.tag}`);
 
-  // 이 시점부터 db.js의 모든 변경사항이 백업채널에 실시간으로(일반 텍스트 JSON) 기록됨
+  // 이 시점부터 db.js의 모든 변경사항이 백업채널에 실시간으로 기록됨
   setClient(client);
 
-  // 🔧 Railway 등 재배포/재시작마다 파일시스템이 초기화되는 환경 대응:
-  // db.js가 이미 새로 만든 "빈" DB에, 백업채널에 쌓인 이벤트 로그를 오래된 순서대로
-  // 재생해서 원래 상태로 재구성함. (반드시 처음 1번, 데이터가 비어있을 때만 실행)
+  // DB 복원
   await restoreFromEventLog(client, { addBlacklist, removeBlacklist });
 
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
@@ -112,11 +124,16 @@ client.once("ready", async () => {
   // DB에서 이전 송금 패널 메시지 복구
   await restoreStockMessage(client);
   setInterval(updateStockMessage, 60_000);
-  // 즉시 1회 체크 + 이후 60초마다 입고 여부 체크 (관리자 로그 + 공개 입고알림)
+  
+  // 재고 현황 체크
   const runRestockCheck = () => checkAndNotifyRestock(client, (diffKrw) => notifyPublicRestock(client, diffKrw));
   await runRestockCheck();
   setInterval(runRestockCheck, 60_000);
 
+  // 💡 자동 충전 시스템(Pushbullet) 웹소켓 연결 시작 (이 부분 추가됨)
+  startPushbulletStream(client);
+
   client.on("interactionCreate", (interaction) => handleInteraction(interaction));
 });
+
 client.login(process.env.DISCORD_TOKEN);
