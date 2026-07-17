@@ -85,11 +85,11 @@ export async function buildMainContainer() {
                     .setLabel("송금")
                     .setCustomId("send_open_select"),
                 new ButtonBuilder()
-                    .setStyle(ButtonStyle.Success)
+                    .setStyle(ButtonStyle.Secondary)
                     .setLabel("내 정보")
                     .setCustomId("user_info_open"),
                 new ButtonBuilder()
-                    .setStyle(ButtonStyle.Success)
+                    .setStyle(ButtonStyle.Secondary)
                     .setLabel("계산기")
                     .setCustomId("calc_open"),
             ),
@@ -372,8 +372,8 @@ export function uiSendConfirm({ coin, network, address, krw, coinAmount, feeKrw,
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("-# 주소를 다시 한번 확인해주세요. 송금 후에는 취소가 불가능합니다."))
     .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("send_confirm_yes").setLabel("송금하기").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("send_confirm_no").setLabel("취소").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("send_confirm_yes").setLabel("송금하기").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("send_confirm_no").setLabel("취소").setStyle(ButtonStyle.Danger),
     ));
 }
 
