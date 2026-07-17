@@ -411,13 +411,13 @@ async function handleButton(interaction) {
     await interaction.reply({ components: [uiCalcCoinSelect()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-  if (id === "send_cancel") {
+  if (id === "send_confirm_no") {
     pendingTransfers.delete(interaction.user.id);
     await interaction.update({ content: "❌ 송금이 취소되었습니다.", components: [], flags: MessageFlags.IsComponentsV2 });
     return;
   }
 
-  if (id === "send_confirm") {
+  if (id === "send_confirm_yes") {
     if (activeSending.has(interaction.user.id)) { await interaction.reply({ content: "⏳ 이미 송금이 진행 중입니다.", ephemeral: true }); return; }
     await interaction.deferUpdate();
     const pending = pendingTransfers.get(interaction.user.id);
@@ -464,7 +464,7 @@ async function handleButton(interaction) {
    셀렉트 메뉴
 ============================================================ */
 async function handleSelect(interaction) {
-  if (interaction.customId === "info_history_select") {
+  if (interaction.customId === "history_select") {
     const row = db.prepare("SELECT * FROM send_history WHERE id = ?").get(parseInt(interaction.values[0]));
     if (!row) { await interaction.reply({ content: "❌ 내역을 찾을 수 없습니다.", ephemeral: true }); return; }
     await interaction.reply({ components: [uiHistoryDetail(row)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
