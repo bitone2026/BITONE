@@ -440,25 +440,78 @@ async function handleButton(interaction) {
       return;
     }
 
-    const actualCoinAmount = result.receivedQty ?? coinAmount;
-    try {
-      await interaction.editReply({ components: [uiSendComplete({ coin, coinAmount: actualCoinAmount, krw, address, result })], flags: MessageFlags.IsComponentsV2 });
-      await sendLog(interaction.client, "success", { user: userTag, coin, address, amount: actualCoinAmount.toFixed(6), krw, hash: result.hash, explorer: result.explorer });
-      recordSend(interaction.user.id, { coin, amount: actualCoinAmount, krw, address, hash: result.hash });
-      await sendPublicPurchaseLog(interaction.client, { userId: interaction.user.id, coin, coinAmount: actualCoinAmount, krw });
+    const actualCoinAmount = Number(result.receivedQty ?? coinAmount ?? 0);
 
-      if (interaction.guild) {
-        const newGrade = await assignGradeRole(interaction.guild, interaction.user.id);
-        if (newGrade) { try { await interaction.user.send({ components: [uiGradeUp(newGrade)], flags: MessageFlags.IsComponentsV2 }); } catch {} }
-      }
-      await updateStockMessage();
-    } catch (postErr) {
-      console.error("송금 후속 처리 중 오류:", postErr.message);
-      await sendLog(interaction.client, "fail", { user: userTag, coin, address, action: "송금 후속 처리 오류 (실제 송금은 성공함)", hash: result?.hash ?? "알 수 없음", error: postErr.message }).catch(() => {});
-    } finally {
-      activeSending.delete(interaction.user.id);
+try {
+  await interaction.editReply({
+    components: [
+      uiSendComplete({
+        coin,
+        coinAmount: actualCoinAmount,
+        krw: Number(krw ?? 0),
+        address,
+        result: result ?? {}
+      })
+    ],
+    flags: MessageFlags.IsComponentsV2
+  });
+
+  await sendLog(interaction.client, "success", {
+    user: userTag,
+    coin,
+    address,
+    amount: actualCoinAmount.toFixed(6),
+    krw: Number(krw ?? 0),
+    hash: result.hash,
+    explorer: result.explorer
+  });
+
+  await recordSend(interaction.user.id, {
+    coin,
+    amount: actualCoinAmount,
+    krw: Number(krw ?? 0),
+    address,
+    hash: result.hash
+  });
+
+  await sendPublicPurchaseLog(interaction.client, {
+    userId: interaction.user.id,
+    coin,
+    coinAmount: actualCoinAmount,
+    krw: Number(krw ?? 0)
+  });
+
+  if (interaction.guild) {
+    const newGrade = await assignGradeRole(
+      interaction.guild,
+      interaction.user.id
+    );
+
+    if (newGrade) {
+      try {
+        await interaction.user.send({
+          components: [uiGradeUp(newGrade)],
+          flags: MessageFlags.IsComponentsV2
+        });
+      } catch {}
     }
   }
+
+  await updateStockMessage();
+
+} catch (postErr) {
+  console.error("송금 후속 처리 중 오류:", postErr.message);
+
+  await sendLog(interaction.client, "fail", {
+    user: userTag,
+    coin,
+    address,
+    action: "송금 후속 처리 오류 (실제 송금은 성공함)",
+    hash: result?.hash ?? "알 수 없음",
+    error: postErr.message
+  }).catch(() => {});
+} finally {
+  activeSending.delete(interaction.user.id);
 }
 
 /* ============================================================
