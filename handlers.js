@@ -442,14 +442,18 @@ async function handleButton(interaction) {
 
     const actualCoinAmount = Number(result.receivedQty ?? coinAmount ?? 0);
 
-    try {
+        try {
+      // ★ 수정된 부분: 누락되었던 feeKrw, actualKrw, hash 등을 모두 전달합니다.
       await interaction.editReply({
         components: [
           uiSendComplete({
             coin,
             coinAmount: actualCoinAmount,
             krw: Number(krw ?? 0),
+            feeKrw,       // 추가됨
+            actualKrw,    // 추가됨
             address,
+            hash: result?.hash, // 추가됨
             result: result ?? {}
           })
         ],
@@ -462,23 +466,29 @@ async function handleButton(interaction) {
         address,
         amount: actualCoinAmount.toFixed(6),
         krw: Number(krw ?? 0),
-        hash: result.hash,
-        explorer: result.explorer
+        feeKrw,       // 추가됨
+        actualKrw,    // 추가됨
+        hash: result?.hash,
+        explorer: result?.explorer
       });
 
       await recordSend(interaction.user.id, {
         coin,
         amount: actualCoinAmount,
         krw: Number(krw ?? 0),
+        feeKrw,       // 추가됨
+        actualKrw,    // 추가됨
         address,
-        hash: result.hash
+        hash: result?.hash
       });
 
       await sendPublicPurchaseLog(interaction.client, {
         userId: interaction.user.id,
         coin,
         coinAmount: actualCoinAmount,
-        krw: Number(krw ?? 0)
+        krw: Number(krw ?? 0),
+        feeKrw,       // 추가됨
+        actualKrw     // 추가됨
       });
 
       if (interaction.guild) {
