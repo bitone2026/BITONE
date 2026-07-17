@@ -377,7 +377,7 @@ export function uiSendConfirm({ coin, network, address, krw, coinAmount, feeKrw,
     ));
 }
 
-export function uiSendComplete({ coin, coinAmount, address, hash, krw, newBalance }) {
+export function uiSendComplete({ coin, coinAmount, address, hash, krw, feeKrw, actualKrw, result }) {
   const chain = CHAIN_MAP[coin] || "BSC";
   const explorerBase = {
     BSC: "https://bscscan.com/tx/",
@@ -385,7 +385,7 @@ export function uiSendComplete({ coin, coinAmount, address, hash, krw, newBalanc
     LTC: "https://blockchair.com/litecoin/transaction/",
     SOL: "https://solscan.io/tx/",
   };
-  const url = (explorerBase[chain] || explorerBase.BSC) + hash;
+  const url = (explorerBase[chain] || explorerBase.BSC) + (hash || result?.hash || "");
 
   return new ContainerBuilder()
     .setAccentColor(3066993)
@@ -393,13 +393,15 @@ export function uiSendComplete({ coin, coinAmount, address, hash, krw, newBalanc
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(
       `**송금액:** ${krw.toLocaleString()}원 (${coinAmount.toFixed(6)} ${coin})\n` +
-      `**주소:** \`${address}\`\n` +
-      `**잔액:** ${newBalance.toLocaleString()}원`
+      `**실제 송금액:** ${actualKrw.toLocaleString()}원\n` +
+      `**수수료:** ${feeKrw.toLocaleString()}원\n` +
+      `**주소:** \`${address}\``
     ))
     .addActionRowComponents(new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel("트랜잭션 확인").setStyle(ButtonStyle.Link).setURL(url)
     ));
 }
+
 
 export function uiSendFail(reason) {
   return new ContainerBuilder()
