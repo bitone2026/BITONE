@@ -1,6 +1,8 @@
+import WebSocket from 'ws';
 import {
   ModalBuilder, TextInputBuilder, TextInputStyle,
   ActionRowBuilder, ChannelType, PermissionFlagsBits, MessageFlags,
+  ContainerBuilder, TextDisplayBuilder, SeparatorBuilder, SeparatorSpacingSize
 } from "discord.js";
 import { ethers } from "ethers";
 
@@ -9,7 +11,7 @@ import {
   getPoints, addPoints, deductPoints, getTotalSpent, adjustTotalSpent, getSendHistory,
   getDailySpent, checkDailyLimit, DAILY_LIMIT, getDailyLimitFor, setDailyLimitFor, resetDailyLimitFor,
   getGrade, GRADE_TIERS, getNotifiedGrade, setNotifiedGrade, recordSend,
-  getConfig, setConfig,
+  getConfig, setConfig, getAutoChargeLimit, setAutoChargeLimit, getAutoChargeLimitFor, setAutoChargeLimitFor, resetAutoChargeLimitFor,
 } from "./db.js";
 import { getRates, processSwapTransfer, sendLog, getBalancesKRW, getCalcCoinKrwPrice } from "./wallet.js";
 import { logDbEvent } from "./dbEventLog.js";
@@ -23,14 +25,24 @@ import {
   uiAdminInfo, uiStockInfo, uiCalcCoinSelect, uiCalcResult, uiNoPermission,
   uiBlacklisted, uiBlacklistUpdated, uiBlacklistInfo, uiManualChargeDone, uiManualVerifyDone,
   uiPurchaseThanks, uiStockRestockAlert, uiGradeInfo, uiAdjustTotalSpentDone, uiLimitAdjusted,
-  uiBalanceAdjustedDM,
+  uiBalanceAdjustedDM, uiChargeLimitExceeded, uiAlreadyPendingCharge,
 } from "./ui.js";
 
 /* ============================================================
+   설정 및 상태 관리
+============================================================ */
+export const pendingTransfers = new Map();
+const activeSending = new Set();
+let _stockMessage   = null;
+let _isMaintenance  = getConfig("maintenance") === "true";
+
+// 💡 자동 충전 대기열 관리 Map
+export const pendingAutoCharges = new Map(); 
+const PUSHBULLET_TOKEN = process.env.PUSHBULLET_TOKEN || "";
+const BANK_INFO = process.env.BANK_INFO || "토스뱅크 1234-5678-9012 홍길동";
+
+/* ============================================================
    블랙리스트
-   기존 db.js를 건드리지 않고, 이미 공유 중인 better-sqlite3 커넥션(db)
-   위에 별도 테이블을 두어 독립적으로 관리함.
-   🔧 이벤트 로그(dbEventLog)를 통해 백업채널에도 기록되고, 복구 시 재생됨.
 ============================================================ */
 db.exec(`
   CREATE TABLE IF NOT EXISTS blacklist (
@@ -62,25 +74,18 @@ export function removeBlacklist(userId) {
   return info.changes > 0;
 }
 
-/**
- * 충전 티켓 채널 보관 처리
- * 삭제 대신 지정된 "삭제보관" 카테고리로 이동시키고, 신청자의 발언 권한을 제거함.
- * .env에 TICKET_ARCHIVE_CATEGORY_ID가 없으면 안전하게 기존처럼 삭제로 폴백.
- */
+/* ============================================================
+   유틸리티 함수 모음
+============================================================ */
 async function archiveTicketChannel(channel, ticketUserId) {
   const archiveCategoryId = process.env.TICKET_ARCHIVE_CATEGORY_ID;
-
   if (!archiveCategoryId) {
-    console.warn("TICKET_ARCHIVE_CATEGORY_ID가 설정되지 않아 티켓을 삭제로 대체 처리합니다.");
     return channel.delete().catch(() => {});
   }
-
   try {
     await channel.setParent(archiveCategoryId, { lockPermissions: false });
     if (ticketUserId) {
-      await channel.permissionOverwrites.edit(ticketUserId, {
-        SendMessages: false,
-      }).catch(() => {});
+      await channel.permissionOverwrites.edit(ticketUserId, { SendMessages: false }).catch(() => {});
     }
     if (!channel.name.startsWith("closed-")) {
       await channel.setName(`closed-${channel.name}`.slice(0, 100)).catch(() => {});
@@ -90,117 +95,58 @@ async function archiveTicketChannel(channel, ticketUserId) {
   }
 }
 
-/**
- * 관리자 판별: 서버의 "관리자" 권한(역할) 대신, .env의 ADMIN_USER_IDS에
- * 등록된 특정 디스코드 유저 ID로만 관리자 여부를 판단함.
- * .env 예시: ADMIN_USER_IDS=111111111111111111,222222222222222222
- */
 const ADMIN_USER_IDS = new Set(
-  (process.env.ADMIN_USER_IDS || "")
-    .split(",")
-    .map(id => id.trim())
-    .filter(Boolean)
+  (process.env.ADMIN_USER_IDS || "").split(",").map(id => id.trim()).filter(Boolean)
 );
+function isAdmin(userId) { return ADMIN_USER_IDS.has(userId); }
 
-function isAdmin(userId) {
-  return ADMIN_USER_IDS.has(userId);
-}
-
-/**
- * "유저" 옵션은 문자열(String) 타입이라, 관리자가 @멘션 자동완성으로 입력하면
- * 실제 값이 "<@1234567890>" 형태로 들어와 순수 ID("1234567890")와
- * 일치하지 않는 문제가 있었음. 멘션 형식이면 숫자 ID만 추출해서 반환.
- */
 function extractUserId(input) {
   if (!input) return input;
   const match = input.trim().match(/^<@!?(\d+)>$/);
   return match ? match[1] : input.trim();
 }
 
-/**
- * 공개 재고입고 알림 발송
- * 구매 감사 로그(PUBLIC_LOG_CHANNEL_ID)와는 완전히 다른 채널(PUBLIC_STOCK_CHANNEL_ID)로 보냄.
- * wallet.js의 checkAndNotifyRestock이 입고를 감지하면 콜백으로 이 함수를 호출함.
- */
+function normalizeSenderName(value) {
+  return String(value ?? "").replace(/\s+/g, "").trim();
+}
+
 export async function notifyPublicRestock(client, diffKrw) {
   try {
     const channelId = process.env.PUBLIC_STOCK_CHANNEL_ID;
-    if (!channelId) {
-      console.warn("PUBLIC_STOCK_CHANNEL_ID가 설정되지 않아 공개 입고알림을 건너뜁니다.");
-      return;
-    }
+    if (!channelId) return;
     const ch = await client.channels.fetch(channelId).catch(() => null);
     if (!ch) return;
     await ch.send({ components: [uiStockRestockAlert(diffKrw)], flags: MessageFlags.IsComponentsV2 });
-  } catch (e) {
-    console.error("공개 입고알림 전송 실패:", e.message);
-  }
+  } catch (e) {}
 }
 
-/**
- * 공개 채널(PUBLIC_LOG_CHANNEL_ID)에 구매 감사 컨테이너 발송
- * 관리자 전용 로그(sendLog)와 별개로, 모든 서버원이 볼 수 있는 공개 채널용.
- */
 async function sendPublicPurchaseLog(client, { userId, coin, coinAmount, krw }) {
   try {
     const channelId = process.env.PUBLIC_LOG_CHANNEL_ID;
-    if (!channelId) {
-      console.warn("PUBLIC_LOG_CHANNEL_ID가 설정되지 않아 공개 구매 로그를 건너뜁니다.");
-      return;
-    }
+    if (!channelId) return;
     const ch = await client.channels.fetch(channelId).catch(() => null);
     if (!ch) return;
     await ch.send({ components: [uiPurchaseThanks({ userId, coin, coinAmount, krw })], flags: MessageFlags.IsComponentsV2 });
-  } catch (e) {
-    console.error("공개 구매 로그 전송 실패:", e.message);
-  }
+  } catch (e) {}
 }
 
-/* ============================================================
-   등급 역할 부여 헬퍼
-   🔧 [수정] 기존에는 .env의 ROLE_KNIGHT 등 4단계 역할 매핑을 썼는데,
-   이제 db.js의 GRADE_TIERS(12단계, 누적금액 기준)에 역할 ID가 직접
-   들어있으므로 grade.roleId를 그대로 사용함.
-   🔧 [추가] "등급 달성!" DM이 혹시라도 중복 발송되는 일이 없도록,
-   DB에 notified_grade를 기록해두고 이미 알린 등급 이상이면 곧바로
-   건너뜀 (member.roles.cache 레이스컨디션에도 안전).
-============================================================ */
 async function assignGradeRole(guild, userId) {
   const grade = getGrade(getTotalSpent(userId));
   if (!grade.roleId) return null;
-
-  // 이미 이 등급(또는 그 이상)으로 알림을 보낸 적 있으면 스킵
   if (getNotifiedGrade(userId) >= grade.threshold) return null;
 
   try {
     const member = await guild.members.fetch({ user: userId, force: true });
-
-    // 다른 등급 역할은 제거하고 새 등급 역할만 부여
     const allTierRoleIds = GRADE_TIERS.map(t => t.roleId);
     const toRemove = allTierRoleIds.filter(id => id !== grade.roleId && member.roles.cache.has(id));
     for (const id of toRemove) await member.roles.remove(id).catch(() => {});
-
-    if (!member.roles.cache.has(grade.roleId)) {
-      await member.roles.add(grade.roleId);
-    }
-
-    // 알림 발송 여부를 즉시 기록해서 이후 중복 호출을 원천 차단
+    if (!member.roles.cache.has(grade.roleId)) await member.roles.add(grade.roleId);
     setNotifiedGrade(userId, grade.threshold);
     return grade;
   } catch { return null; }
 }
 
-/* ============================================================
-   상태 관리
-============================================================ */
-
-export const pendingTransfers = new Map();
-const activeSending = new Set();
-let _stockMessage   = null;
-let _isMaintenance  = getConfig("maintenance") === "true";
-
 export function getStockMessage() { return _stockMessage; }
-
 export function setStockMessage(msg) {
   _stockMessage = msg;
   setConfig("stock_channel_id", msg.channelId);
@@ -214,9 +160,8 @@ export async function restoreStockMessage(client) {
   try {
     const channel = await client.channels.fetch(channelId);
     _stockMessage  = await channel.messages.fetch(messageId);
-    console.log("✅ 송금 패널 메시지 복구 완료");
     await updateStockMessage();
-  } catch (e) { console.error("송금 패널 복구 실패:", e.message); }
+  } catch (e) {}
 }
 
 export async function updateStockMessage() {
@@ -224,74 +169,54 @@ export async function updateStockMessage() {
   try {
     const components = _isMaintenance ? [uiMaintenance()] : await buildMainContainer();
     await _stockMessage.edit({ components, flags: MessageFlags.IsComponentsV2 });
-  } catch (e) { console.error("잔액 갱신 실패:", e.message); }
+  } catch (e) {}
 }
 
-/* ============================================================
-   인증 체크
-============================================================ */
-
-const ALLOW_WITHOUT_VERIFY = [
-  "telecom_SKT","telecom_KT","telecom_LG","telecom_MVNO",
-  "telecom_SKM","telecom_KTM","telecom_LGM",
-];
-
+const ALLOW_WITHOUT_VERIFY = ["telecom_SK","telecom_KT","telecom_LG","telecom_MVNO","telecom_SKM","telecom_KTM","telecom_LGM"];
 function needsVerifyCheck(interaction) {
   if (interaction.isChatInputCommand() || interaction.isModalSubmit()) return false;
   if (interaction.isButton()) {
     const id = interaction.customId;
-    if (ALLOW_WITHOUT_VERIFY.includes(id))  return false;
-    if (id.startsWith("start_input_"))      return false;
-    if (id.startsWith("code_input_"))       return false;
-    if (id.startsWith("charge_approve_"))   return false;
-    if (id.startsWith("charge_reject_"))    return false;
+    if (ALLOW_WITHOUT_VERIFY.includes(id)) return false;
+    if (id.startsWith("start_input_")) return false;
+    if (id.startsWith("code_input_")) return false;
+    if (id.startsWith("charge_approve_")) return false;
+    if (id.startsWith("charge_reject_")) return false;
   }
   return true;
 }
 
 /* ============================================================
-   메인 핸들러
+   인터랙션 메인 핸들러
 ============================================================ */
-
 export async function handleInteraction(interaction) {
-  // 블랙리스트 차단 (관리자 제외) — 명령어/버튼/셀렉트/모달 전부 최우선 차단
   if (isBlacklisted(interaction.user.id) && !isAdmin(interaction.user.id)) {
     const fn = (interaction.deferred || interaction.replied) ? "followUp" : "reply";
     await interaction[fn]({ components: [uiBlacklisted()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-
   if (interaction.isChatInputCommand()) return handleCommand(interaction);
-
-  // 점검 중 차단 (관리자 제외)
   if (_isMaintenance && !isAdmin(interaction.user.id)) {
     const fn = (interaction.deferred || interaction.replied) ? "followUp" : "reply";
     await interaction[fn]({ components: [uiMaintenance()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-
-  // 미인증 차단
   if (needsVerifyCheck(interaction) && !isVerified(interaction.user.id)) {
     const fn = (interaction.deferred || interaction.replied) ? "followUp" : "reply";
     await interaction[fn]({ components: [uiVerify()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
 
-  if (interaction.isButton())           return handleButton(interaction);
+  if (interaction.isButton()) return handleButton(interaction);
   if (interaction.isStringSelectMenu()) return handleSelect(interaction);
-  if (interaction.isModalSubmit())      return handleModal(interaction);
+  if (interaction.isModalSubmit()) return handleModal(interaction);
 }
 
 /* ============================================================
-   슬래시 커맨드
+   슬래시 커맨드 (기존 동일)
 ============================================================ */
-
 async function handleCommand(interaction) {
   const { commandName } = interaction;
-
-  // 🔧 모든 슬래시 커맨드는 예외 없이 관리자 전용.
-  // 개별 명령어마다 체크를 반복하지 않고 여기서 한 번에 차단해서,
-  // 앞으로 새 명령어가 추가돼도 체크를 빠뜨릴 위험이 없게 함.
   if (!isAdmin(interaction.user.id)) {
     await interaction.reply({ components: [uiNoPermission()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
@@ -303,7 +228,6 @@ async function handleCommand(interaction) {
     setStockMessage(msg);
     return;
   }
-
   if (commandName === "점검") {
     _isMaintenance = interaction.options.getString("상태") === "on";
     setConfig("maintenance", String(_isMaintenance));
@@ -311,7 +235,6 @@ async function handleCommand(interaction) {
     await interaction.reply({ components: [uiMaintenanceToggle(_isMaintenance)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-
   if (commandName === "정보조회") {
     const targetId = extractUserId(interaction.options.getString("유저"));
     const row = getVerifiedInfo(targetId);
@@ -323,189 +246,130 @@ async function handleCommand(interaction) {
     });
     return;
   }
-
   if (commandName === "재고현황") {
     await interaction.deferReply({ ephemeral: true });
     try {
       const b = await getBalancesKRW();
       await interaction.editReply({ components: [uiStockInfo(b)], flags: MessageFlags.IsComponentsV2 });
-    } catch (e) {
-      await interaction.editReply({ content: `❌ 조회 실패: ${e.message}` });
-    }
+    } catch (e) { await interaction.editReply({ content: `❌ 조회 실패: ${e.message}` }); }
     return;
   }
-
   if (commandName === "수동인증") {
     const targetId = extractUserId(interaction.options.getString("유저"));
     const realName = interaction.options.getString("이름");
     const birthday = interaction.options.getString("생년월일");
     const phone    = interaction.options.getString("전화번호");
     const telecom  = interaction.options.getString("통신사");
-
     addVerifiedNice({ discordId: targetId, realName, birthday, phone, telecom });
-
-    await sendLog(interaction.client, "info", {
-      action: "수동 인증 처리",
-      user: `<@${targetId}>`,
-      name: realName,
-      telecom,
-      admin: interaction.user.tag,
-    });
-
-    await interaction.reply({
-      components: [uiManualVerifyDone(targetId, realName)],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-    });
+    await sendLog(interaction.client, "info", { action: "수동 인증 처리", user: `<@${targetId}>`, name: realName, telecom, admin: interaction.user.tag });
+    await interaction.reply({ components: [uiManualVerifyDone(targetId, realName)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-
   if (commandName === "블랙리스트") {
-    const action   = interaction.options.getString("동작");   // "추가" | "삭제" | "조회"
+    const action   = interaction.options.getString("동작");
     const targetId = extractUserId(interaction.options.getString("유저"));
     const reason   = interaction.options.getString("사유") || "사유 없음";
-
     if (action === "추가") {
       addBlacklist(targetId, reason, interaction.user.tag);
       await sendLog(interaction.client, "info", { action: "블랙리스트 추가", user: `<@${targetId}>`, reason, admin: interaction.user.tag });
       await interaction.reply({ components: [uiBlacklistUpdated("추가", targetId, reason)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     } else if (action === "삭제") {
       const removed = removeBlacklist(targetId);
-      if (removed) {
-        await sendLog(interaction.client, "info", { action: "블랙리스트 해제", user: `<@${targetId}>`, admin: interaction.user.tag });
-      }
+      if (removed) await sendLog(interaction.client, "info", { action: "블랙리스트 해제", user: `<@${targetId}>`, admin: interaction.user.tag });
       await interaction.reply({ components: [uiBlacklistUpdated(removed ? "삭제" : "없음", targetId, reason)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     } else if (action === "조회") {
       const entry = getBlacklistEntry(targetId);
       await interaction.reply({ components: [uiBlacklistInfo(`<@${targetId}>`, entry)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     } else {
-      await interaction.reply({ content: "❌ 동작 값이 올바르지 않습니다. (추가/삭제/조회 중 하나여야 합니다)", ephemeral: true });
+      await interaction.reply({ content: "❌ 동작 값이 올바르지 않습니다.", ephemeral: true });
     }
     return;
   }
-
   if (commandName === "잔액조정") {
     const targetId = extractUserId(interaction.options.getString("유저"));
     const amount   = interaction.options.getInteger("금액");
-
-    if (!amount || amount === 0) {
-      await interaction.reply({ content: "❌ 유효하지 않은 금액입니다.", ephemeral: true });
-      return;
-    }
-
+    if (!amount || amount === 0) { await interaction.reply({ content: "❌ 유효하지 않은 금액입니다.", ephemeral: true }); return; }
     addPoints(targetId, amount);
     const newBalance = getPoints(targetId);
-
-    await sendLog(interaction.client, "info", {
-      action: "잔액 조정",
-      user: `<@${targetId}>`,
-      amount: amount.toLocaleString(),
-      balance: newBalance.toLocaleString(),
-      admin: interaction.user.tag,
-    });
-
-    await interaction.reply({
-      components: [uiManualChargeDone(targetId, amount, newBalance)],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-    });
-
-    try {
-      const user = await interaction.client.users.fetch(targetId);
-      await user.send({ components: [uiBalanceAdjustedDM(amount, newBalance)], flags: MessageFlags.IsComponentsV2 });
-    } catch { /* DM 차단 */ }
+    await sendLog(interaction.client, "info", { action: "잔액 조정", user: `<@${targetId}>`, amount: amount.toLocaleString(), balance: newBalance.toLocaleString(), admin: interaction.user.tag });
+    await interaction.reply({ components: [uiManualChargeDone(targetId, amount, newBalance)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+    try { const user = await interaction.client.users.fetch(targetId); await user.send({ components: [uiBalanceAdjustedDM(amount, newBalance)], flags: MessageFlags.IsComponentsV2 }); } catch {}
     return;
   }
-
   if (commandName === "누적송금조정") {
     const targetId = extractUserId(interaction.options.getString("유저"));
     const amount   = interaction.options.getInteger("금액");
-
-    if (!amount || amount === 0) {
-      await interaction.reply({ content: "❌ 유효하지 않은 금액입니다. (0이 아닌 값, 음수 가능)", ephemeral: true });
-      return;
-    }
-
+    if (!amount || amount === 0) { await interaction.reply({ content: "❌ 유효하지 않은 금액입니다.", ephemeral: true }); return; }
     adjustTotalSpent(targetId, amount);
     const newTotal = getTotalSpent(targetId);
-
-    await sendLog(interaction.client, "info", {
-      action: "누적송금 조정",
-      user: `<@${targetId}>`,
-      조정액: amount.toLocaleString(),
-      새누적: newTotal.toLocaleString(),
-      admin: interaction.user.tag,
-    });
-
-    // 조정으로 인해 새 등급을 달성했을 수도 있으므로 체크
+    await sendLog(interaction.client, "info", { action: "누적송금 조정", user: `<@${targetId}>`, 조정액: amount.toLocaleString(), 새누적: newTotal.toLocaleString(), admin: interaction.user.tag });
     if (interaction.guild) {
       const newGrade = await assignGradeRole(interaction.guild, targetId);
-      if (newGrade) {
-        try {
-          const user = await interaction.client.users.fetch(targetId);
-          await user.send({ components: [uiGradeUp(newGrade)], flags: MessageFlags.IsComponentsV2 });
-        } catch { /* DM 차단 */ }
-      }
+      if (newGrade) { try { const user = await interaction.client.users.fetch(targetId); await user.send({ components: [uiGradeUp(newGrade)], flags: MessageFlags.IsComponentsV2 }); } catch {} }
     }
-
-    await interaction.reply({
-      components: [uiAdjustTotalSpentDone(targetId, amount, newTotal)],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-    });
+    await interaction.reply({ components: [uiAdjustTotalSpentDone(targetId, amount, newTotal)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-
   if (commandName === "한도조정") {
     const targetId = extractUserId(interaction.options.getString("유저"));
-    const limit    = interaction.options.getInteger("한도"); // 생략하면 기본값으로 초기화
-
+    const limit    = interaction.options.getInteger("한도");
     if (limit === null) {
       resetDailyLimitFor(targetId);
       await sendLog(interaction.client, "info", { action: "일일한도 초기화", user: `<@${targetId}>`, admin: interaction.user.tag });
-      await interaction.reply({
-        components: [uiLimitAdjusted(targetId, DAILY_LIMIT, true)],
-        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-      });
+      await interaction.reply({ components: [uiLimitAdjusted(targetId, DAILY_LIMIT, true)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
       return;
     }
-
-    if (limit < 0) {
-      await interaction.reply({ content: "❌ 한도는 0 이상이어야 합니다.", ephemeral: true });
-      return;
-    }
-
+    if (limit < 0) { await interaction.reply({ content: "❌ 한도는 0 이상이어야 합니다.", ephemeral: true }); return; }
     setDailyLimitFor(targetId, limit);
     await sendLog(interaction.client, "info", { action: "일일한도 조정", user: `<@${targetId}>`, 한도: limit.toLocaleString(), admin: interaction.user.tag });
-    await interaction.reply({
-      components: [uiLimitAdjusted(targetId, limit, false)],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-    });
+    await interaction.reply({ components: [uiLimitAdjusted(targetId, limit, false)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
 
+  if (commandName === "자동충전한도") {
+    const target = interaction.options.getUser("유저");
+    const amount = interaction.options.getInteger("금액");
+
+    if (!target) {
+      // 유저 지정 없으면 전체 기본 한도 변경
+      if (amount === null || amount < 0) { await interaction.reply({ content: "❌ 올바른 금액을 입력해주세요.", ephemeral: true }); return; }
+      setAutoChargeLimit(amount);
+      await sendLog(interaction.client, "info", { action: "자동충전 기본 한도 변경", 한도: amount.toLocaleString(), admin: interaction.user.tag });
+      await interaction.reply({ content: `✅ 자동 충전 **기본** 1회 한도가 **${amount.toLocaleString()}원**으로 변경되었습니다.`, ephemeral: true });
+    } else {
+      // 특정 유저 개별 한도 변경
+      if (amount === null) {
+        // 금액 생략 시 개별 한도 초기화
+        resetAutoChargeLimitFor(target.id);
+        await sendLog(interaction.client, "info", { action: "유저 자동충전 한도 초기화", 유저: `<@${target.id}>`, admin: interaction.user.tag });
+        await interaction.reply({ content: `✅ <@${target.id}> 님의 자동 충전 한도가 기본값으로 초기화되었습니다.`, ephemeral: true });
+      } else {
+        if (amount < 0) { await interaction.reply({ content: "❌ 올바른 금액을 입력해주세요.", ephemeral: true }); return; }
+        setAutoChargeLimitFor(target.id, amount);
+        await sendLog(interaction.client, "info", { action: "유저 자동충전 한도 변경", 유저: `<@${target.id}>`, 한도: amount.toLocaleString(), admin: interaction.user.tag });
+        await interaction.reply({ content: `✅ <@${target.id}> 님의 자동 충전 1회 한도가 **${amount.toLocaleString()}원**으로 설정되었습니다.`, ephemeral: true });
+      }
+    }
+    return;
+  }
 }
 
 /* ============================================================
    버튼
 ============================================================ */
-
 async function handleButton(interaction) {
   const id = interaction.customId;
 
-  // NICE 인증
   if (id.startsWith("telecom_"))     return handleTelecomButton(interaction);
   if (id.startsWith("start_input_")) return handleStartInputButton(interaction);
   if (id.startsWith("code_input_"))  return handleCodeInputButton(interaction);
 
-  // 내 정보 (+ 송금내역 통합)
   if (id === "user_info_open") {
     const spent = getTotalSpent(interaction.user.id);
     await interaction.reply({
       components: [uiMyInfo({
-        user: interaction.user,
-        grade: getGrade(spent),
-        points: getPoints(interaction.user.id),
-        spent,
-        dailySpent: getDailySpent(interaction.user.id),
-        dailyLimit: getDailyLimitFor(interaction.user.id),
+        user: interaction.user, grade: getGrade(spent), points: getPoints(interaction.user.id),
+        spent, dailySpent: getDailySpent(interaction.user.id), dailyLimit: getDailyLimitFor(interaction.user.id),
         history: getSendHistory(interaction.user.id, 10),
       })],
       flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
@@ -513,136 +377,61 @@ async function handleButton(interaction) {
     return;
   }
 
-  // 등급 안내
   if (id === "grade_info_open") {
     await interaction.reply({ components: [uiGradeInfo()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
 
-  // 충전 버튼 → 모달
+  // 💡 자동 충전 버튼 모달 연결 (DB에서 입금자명 확인 후 금액만 입력받음)
   if (id === "charge_open") {
+    const userInfo = getVerifiedInfo(interaction.user.id);
+    if (!userInfo || !userInfo.realName) {
+      await interaction.reply({ content: "❌ 실명 인증 정보가 없습니다. 먼저 인증을 진행해주세요.", ephemeral: true });
+      return;
+    }
+    const realName = userInfo.realName;
+
     await interaction.showModal(
-      new ModalBuilder().setCustomId("charge_modal").setTitle("포인트 충전 신청")
-        .addComponents(new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("charge_amount").setLabel("충전 금액 (원)")
-            .setStyle(TextInputStyle.Short).setPlaceholder("예: 10000").setRequired(true)
-        ))
+      new ModalBuilder().setCustomId("auto_charge_modal").setTitle("충전신청")
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("charge_amount").setLabel("충전 금액 (원)")
+              .setStyle(TextInputStyle.Short).setPlaceholder("예: 10000").setRequired(true)
+          )
+        )
     );
     return;
   }
 
-  // 충전 승인
-  if (id.startsWith("charge_approve_")) {
-    if (!isAdmin(interaction.user.id)) {
-      await interaction.reply({ components: [uiNoPermission()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral }); return;
-    }
-    const rest = id.replace("charge_approve_", "");
-    const sep  = rest.lastIndexOf("_");
-    const userId = rest.slice(0, sep);
-    const amount = parseInt(rest.slice(sep + 1));
-    addPoints(userId, amount);
-
-    await interaction.update({ components: [uiChargeApproved(userId, amount, interaction.user.tag)], flags: MessageFlags.IsComponentsV2 });
-
-    try {
-      const user = await interaction.client.users.fetch(userId);
-      await user.send({ components: [uiChargeApprovedDM(amount, getPoints(userId))], flags: MessageFlags.IsComponentsV2 });
-    } catch { /* DM 차단 */ }
-
-    if (interaction.guild) {
-      const newGrade = await assignGradeRole(interaction.guild, userId);
-      if (newGrade) {
-        try {
-          const user = await interaction.client.users.fetch(userId);
-          await user.send({ components: [uiGradeUp(newGrade)], flags: MessageFlags.IsComponentsV2 });
-        } catch { /* DM 차단 */ }
-      }
-    }
-    await sendLog(interaction.client, "success", {
-      action: "충전 승인",
-      user: `<@${userId}>`,
-      amount: amount.toLocaleString(),
-      admin: interaction.user.tag,
-    });
-    setTimeout(() => archiveTicketChannel(interaction.channel, userId), 5000);
-    return;
-  }
-  // 충전 거절
-  if (id.startsWith("charge_reject_")) {
-    if (!isAdmin(interaction.user.id)) {
-      await interaction.reply({ components: [uiNoPermission()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral }); return;
-    }
-    const rest = id.replace("charge_reject_", "");
-    const sep  = rest.lastIndexOf("_");
-    const userId = rest.slice(0, sep);
-    const amount = parseInt(rest.slice(sep + 1));
-
-    await interaction.update({ components: [uiChargeRejected(userId, amount, interaction.user.tag)], flags: MessageFlags.IsComponentsV2 });
-    try {
-      const user = await interaction.client.users.fetch(userId);
-      await user.send({ components: [uiChargeRejectedDM(amount)], flags: MessageFlags.IsComponentsV2 });
-    } catch { /* DM 차단 */ }
-    await sendLog(interaction.client, "fail", {
-      action: "충전 거절",
-      user: `<@${userId}>`,
-      amount: amount.toLocaleString(),
-      admin: interaction.user.tag,
-    });
-    setTimeout(() => archiveTicketChannel(interaction.channel, userId), 5000);
-    return;
-  }
-
-  // 송금 버튼 → 코인 선택
   if (id === "send_open_select") {
     await interaction.reply({ components: [uiCoinSelect()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-
-  // 계산 버튼 → 코인 선택
   if (id === "calc_open") {
     await interaction.reply({ components: [uiCalcCoinSelect()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-
-  // 송금 취소
   if (id === "send_cancel") {
     pendingTransfers.delete(interaction.user.id);
     await interaction.update({ content: "❌ 송금이 취소되었습니다.", components: [], flags: MessageFlags.IsComponentsV2 });
     return;
   }
 
-  // 송금 확인 → 실제 송금
   if (id === "send_confirm") {
-    if (activeSending.has(interaction.user.id)) {
-      await interaction.reply({ content: "⏳ 이미 송금이 진행 중입니다.", ephemeral: true }); return;
-    }
+    if (activeSending.has(interaction.user.id)) { await interaction.reply({ content: "⏳ 이미 송금이 진행 중입니다.", ephemeral: true }); return; }
     await interaction.deferUpdate();
-
     const pending = pendingTransfers.get(interaction.user.id);
     if (!pending) { await interaction.editReply({ content: "❌ 송금 정보가 만료되었습니다.", components: [] }); return; }
     pendingTransfers.delete(interaction.user.id);
     const { coin, address, coinAmount, krw, actualKrw, feeKrw, userTag } = pending;
 
-    // 포인트 차감
-    if (!deductPoints(interaction.user.id, krw)) {
-      await interaction.editReply({ components: [uiInsufficientPoints(krw, getPoints(interaction.user.id))], flags: MessageFlags.IsComponentsV2 });
-      return;
-    }
-
+    if (!deductPoints(interaction.user.id, krw)) { await interaction.editReply({ components: [uiInsufficientPoints(krw, getPoints(interaction.user.id))], flags: MessageFlags.IsComponentsV2 }); return; }
     activeSending.add(interaction.user.id);
 
-    // 🔧 [핵심 버그 수정] 실제 송금(MEXC 매수+출금) 자체의 성공/실패와,
-    // 그 이후의 후속 처리(완료화면 표시/로그/등급체크 등)의 성공/실패를
-    // 반드시 분리해야 함. 예전에는 둘 다 같은 try/catch 안에 있어서,
-    // 실제 코인이 이미 정상적으로 나간 뒤에 후속 처리 중 아무 에러(디스코드
-    // API 일시 오류 등)가 나도 "전체 실패"로 착각해서 포인트를 다시
-    // 환불해버리는 심각한 버그가 있었음 (고객은 코인도 받고 포인트도
-    // 돌려받는 이중 이득, 운영자 입장에선 "잔액이 안 빠져나간 것처럼" 보임).
     let result;
     try {
       result = await processSwapTransfer("BNB", coin, actualKrw, address);
     } catch (err) {
-      // 실제 송금 자체가 실패한 경우에만 환불
       addPoints(interaction.user.id, krw);
       await interaction.editReply({ components: [uiSendFail(err.message)], flags: MessageFlags.IsComponentsV2 });
       await sendLog(interaction.client, "fail", { user: userTag, coin, address, amount: coinAmount.toFixed(6), krw, error: err.message });
@@ -650,38 +439,21 @@ async function handleButton(interaction) {
       return;
     }
 
-    // 여기부터는 실제 송금이 이미 성공한 상태 → 이후 단계가 실패해도 절대 환불하지 않음
-    const actualCoinAmount = result.receivedQty ?? coinAmount; // 실제 매수/출금된 진짜 수량 사용 (추정치 아님)
+    const actualCoinAmount = result.receivedQty ?? coinAmount;
     try {
-      await interaction.editReply({
-        components: [uiSendComplete({ coin, coinAmount: actualCoinAmount, krw, address, result })],
-        flags: MessageFlags.IsComponentsV2,
-      });
-
-      // 로그/기록은 사용자가 모달에 입력한 원래 금액(krw) + 실제 체결된 코인 수량으로 남김
+      await interaction.editReply({ components: [uiSendComplete({ coin, coinAmount: actualCoinAmount, krw, address, result })], flags: MessageFlags.IsComponentsV2 });
       await sendLog(interaction.client, "success", { user: userTag, coin, address, amount: actualCoinAmount.toFixed(6), krw, hash: result.hash, explorer: result.explorer });
       recordSend(interaction.user.id, { coin, amount: actualCoinAmount, krw, address, hash: result.hash });
-
-      // 공개 채널에 구매 감사 메시지
       await sendPublicPurchaseLog(interaction.client, { userId: interaction.user.id, coin, coinAmount: actualCoinAmount, krw });
 
       if (interaction.guild) {
         const newGrade = await assignGradeRole(interaction.guild, interaction.user.id);
-        if (newGrade) {
-          try { await interaction.user.send({ components: [uiGradeUp(newGrade)], flags: MessageFlags.IsComponentsV2 }); }
-          catch { /* DM 차단 */ }
-        }
+        if (newGrade) { try { await interaction.user.send({ components: [uiGradeUp(newGrade)], flags: MessageFlags.IsComponentsV2 }); } catch {} }
       }
       await updateStockMessage();
     } catch (postErr) {
-      // 실제 송금은 이미 성공했으므로 환불하지 않고, 관리자에게만 오류를 알림
-      console.error("송금 후속 처리 중 오류 (환불하지 않음, 실제 송금은 성공):", postErr.message);
-      await sendLog(interaction.client, "fail", {
-        user: userTag, coin, address,
-        action: "송금 후속 처리 오류 (실제 송금은 성공함, 환불 안 됨)",
-        hash: result?.hash ?? "알 수 없음",
-        error: postErr.message,
-      }).catch(() => {});
+      console.error("송금 후속 처리 중 오류:", postErr.message);
+      await sendLog(interaction.client, "fail", { user: userTag, coin, address, action: "송금 후속 처리 오류 (실제 송금은 성공함)", hash: result?.hash ?? "알 수 없음", error: postErr.message }).catch(() => {});
     } finally {
       activeSending.delete(interaction.user.id);
     }
@@ -691,110 +463,113 @@ async function handleButton(interaction) {
 /* ============================================================
    셀렉트 메뉴
 ============================================================ */
-
 async function handleSelect(interaction) {
-  // 송금 내역 상세
   if (interaction.customId === "info_history_select") {
     const row = db.prepare("SELECT * FROM send_history WHERE id = ?").get(parseInt(interaction.values[0]));
     if (!row) { await interaction.reply({ content: "❌ 내역을 찾을 수 없습니다.", ephemeral: true }); return; }
     await interaction.reply({ components: [uiHistoryDetail(row)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-
-  // 코인 선택 → 네트워크 선택
   if (interaction.customId === "send_select_coin") {
     await interaction.update({ components: [uiNetworkSelect(interaction.values[0])], flags: MessageFlags.IsComponentsV2 });
     return;
   }
-
-  // 네트워크 선택 → 모달
   if (interaction.customId === "send_select_network") {
     const coin = interaction.values[0];
     const placeholder = coin === "TRX" ? "T로 시작하는 주소" : coin === "LTC" ? "L 또는 M으로 시작하는 주소" : coin === "SOL" ? "SOL 지갑 주소" : "0x...";
     await interaction.showModal(
       new ModalBuilder().setCustomId(`send_modal_${coin}`).setTitle(`${coin} 송금`)
         .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId("send_address").setLabel("받는 주소")
-              .setStyle(TextInputStyle.Short).setPlaceholder(placeholder).setRequired(true)
-          ),
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId("send_amount_krw").setLabel("송금 금액 (원화 KRW)")
-              .setStyle(TextInputStyle.Short).setPlaceholder("예: 5000").setRequired(true)
-          ),
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("send_address").setLabel("받는 주소").setStyle(TextInputStyle.Short).setPlaceholder(placeholder).setRequired(true)),
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("send_amount_krw").setLabel("송금 금액 (원화 KRW)").setStyle(TextInputStyle.Short).setPlaceholder("예: 5000").setRequired(true))
         )
     );
     return;
   }
-
-  // 계산기: 코인 선택 → 금액 입력 모달
   if (interaction.customId === "calc_select_coin") {
     const coin = interaction.values[0];
     await interaction.showModal(
       new ModalBuilder().setCustomId(`calc_modal_${coin}`).setTitle(`${coin} 송금 계산기`)
-        .addComponents(new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("calc_krw").setLabel("계산할 금액 (원화 KRW)")
-            .setStyle(TextInputStyle.Short).setPlaceholder("예: 100000").setRequired(true)
-        ))
+        .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("calc_krw").setLabel("계산할 금액 (원화 KRW)").setStyle(TextInputStyle.Short).setPlaceholder("예: 100000").setRequired(true)))
     );
     return;
   }
 }
 
 /* ============================================================
-   모달
+   모달 (자동 충전 로직 포함)
 ============================================================ */
-
 async function handleModal(interaction) {
   if (interaction.customId.startsWith("info_modal_")) return handleInfoModal(interaction);
   if (interaction.customId.startsWith("code_modal_")) return handleCodeModal(interaction);
 
-  // 충전 모달
-  if (interaction.customId === "charge_modal") {
-    await interaction.deferReply({ ephemeral: true });
+  // 💡 자동 충전 신청 모달 제출 (입금자명 DB 연동)
+  if (interaction.customId === "auto_charge_modal") {
+    const userInfo = getVerifiedInfo(interaction.user.id);
+    if (!userInfo || !userInfo.realName) {
+      await interaction.reply({ content: "❌ 실명 인증 정보를 찾을 수 없습니다.", ephemeral: true });
+      return;
+    }
+    const senderName = userInfo.realName;
 
-    // 숫자만 추출 (SQL 인젝션 및 악의적 입력 방지)
     const rawAmount = interaction.fields.getTextInputValue("charge_amount");
-    const amount    = parseInt(rawAmount.replace(/[^0-9]/g, ""), 10);
+    const amount = parseInt(rawAmount.replace(/[^0-9]/g, ""), 10);
 
-    if (isNaN(amount) || amount <= 0)       { await interaction.editReply({ content: "❌ 유효하지 않은 금액입니다." }); return; }
-    if (amount > 10_000_000)                { await interaction.editReply({ content: "❌ 1회 최대 충전액은 10,000,000원입니다." }); return; }
-
-    const row      = getVerifiedInfo(interaction.user.id);
-    const username = row?.real_name ?? interaction.user.username;
-
-    // 채널명 특수문자 제거 (Discord 채널명 규칙 + 인젝션 방지)
-    const safeUsername = interaction.user.username.replace(/[^a-z0-9가-힣ㄱ-ㅎㅏ-ㅣ_\-]/gi, "").slice(0, 20) || "user";
-
-    let ticketChannel;
-    try {
-      ticketChannel = await interaction.guild.channels.create({
-        name: `충전-${safeUsername}`,
-        type: ChannelType.GuildText,
-        parent: process.env.TICKET_CATEGORY_ID || null,
-        permissionOverwrites: [
-          { id: interaction.guild.roles.everyone, deny:  [PermissionFlagsBits.ViewChannel] },
-          { id: interaction.user.id,              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-        ],
+    if (isNaN(amount) || amount <= 0) { await interaction.reply({ content: "❌ 유효하지 않은 금액입니다.", ephemeral: true }); return; }
+    const limit = getAutoChargeLimitFor(interaction.user.id);
+    // 💡 1인 1신청 중복 체크
+    const isAlreadyPending = Array.from(pendingAutoCharges.values()).some(x => x.userId === interaction.user.id && x.status === 'waiting');
+    if (isAlreadyPending) {
+      await interaction.reply({ 
+        components: [uiAlreadyPendingCharge()], 
+        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral 
       });
-    } catch (e) { await interaction.editReply({ content: `❌ 티켓 채널 생성 실패: ${e.message}` }); return; }
+      return;
+    }
 
-    await interaction.editReply({ components: [uiChargeCreated(ticketChannel)], flags: MessageFlags.IsComponentsV2 });
-    await ticketChannel.send({ components: [uiChargeTicket(interaction.user.id, username, amount)], flags: MessageFlags.IsComponentsV2 });
+    if (amount > limit) {
+      await interaction.reply({ 
+        components: [uiChargeLimitExceeded(limit)], 
+        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral 
+      });
+      return;
+    }
 
-    // 티켓 생성 즉시 로그 (신청 유저, 실명, 시각, 금액)
+    const id = `${interaction.user.id}_${Date.now()}`;
+    const waitingContainer = buildWaitingContainer(senderName, amount);
+
+    await interaction.reply({
+        components: [waitingContainer],
+        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral
+    });
+
+    const timeoutId = setTimeout(() => {
+        if (pendingAutoCharges.has(id) && pendingAutoCharges.get(id).status === 'waiting') {
+            pendingAutoCharges.delete(id);
+        }
+    }, 14 * 60 * 1000); // 14분 대기시간
+
+    pendingAutoCharges.set(id, {
+        id,
+        userId: interaction.user.id,
+        amount,
+        senderName,
+        status: 'waiting',
+        interaction,
+        timeoutId
+    });
+    
+    // 디스코드 로그채널 기록
     await sendLog(interaction.client, "info", {
-      action: "충전 티켓 생성",
-      신청유저: `<@${interaction.user.id}> (${interaction.user.tag})`,
-      실명: username,
-      신청시각: new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }),
-      금액: `${amount.toLocaleString()}원`,
-      channel: `<#${ticketChannel.id}>`,
+      action: "자동 충전 대기",
+      유저: `<@${interaction.user.id}>`,
+      입금자명: senderName,
+      금액: `${amount.toLocaleString()}원`
     });
     return;
   }
 
-  // 송금 모달
+  // 나머지 모달들 (송금, 계산기 등 기존 동일)
   if (interaction.customId.startsWith("send_modal_")) {
     await interaction.deferReply({ ephemeral: true });
     const coin    = interaction.customId.replace("send_modal_", "");
@@ -805,89 +580,212 @@ async function handleModal(interaction) {
     if (isNaN(krw) || krw <= 0) { await interaction.editReply({ content: "❌ 유효하지 않은 금액입니다." }); return; }
     if ((coin === "BNB" || coin === "USDTBSC") && !ethers.isAddress(address)) { await interaction.editReply({ content: "❌ 유효하지 않은 BSC 주소입니다." }); return; }
     if (coin === "SOL") {
-      try { new (await import("@solana/web3.js")).PublicKey(address); }
-      catch { await interaction.editReply({ content: "❌ 유효하지 않은 SOL 주소입니다." }); return; }
+      try { new (await import("@solana/web3.js")).PublicKey(address); } catch { await interaction.editReply({ content: "❌ 유효하지 않은 SOL 주소입니다." }); return; }
     }
 
-    // 포인트 체크
     const balance = getPoints(interaction.user.id);
-    if (balance < krw) {
-      await interaction.editReply({ components: [uiInsufficientPoints(krw, balance)], flags: MessageFlags.IsComponentsV2 }); return;
-    }
-
-    // 일일 한도 체크 (유저별 커스텀 한도가 있으면 그 값을 사용)
+    if (balance < krw) { await interaction.editReply({ components: [uiInsufficientPoints(krw, balance)], flags: MessageFlags.IsComponentsV2 }); return; }
     const dailySpent = getDailySpent(interaction.user.id);
-    if (!checkDailyLimit(interaction.user.id, krw)) {
-      await interaction.editReply({
-        components: [uiDailyLimitExceeded(dailySpent, krw, getDailyLimitFor(interaction.user.id))],
-        flags: MessageFlags.IsComponentsV2,
-      });
-      return;
-    }
+    if (!checkDailyLimit(interaction.user.id, krw)) { await interaction.editReply({ components: [uiDailyLimitExceeded(dailySpent, krw, getDailyLimitFor(interaction.user.id))], flags: MessageFlags.IsComponentsV2 }); return; }
 
-    // 수수료 계산 (대행 수수료 5.5% + 현재 김프)
     let rates, coinAmount, feeRate, actualKrw;
     try {
-      rates         = await getRates([coin]);
+      rates = await getRates([coin]);
       const kimpRate = Math.max(0, (rates.btcKimp ?? 0) / 100);
-      feeRate        = kimpRate + 0.08;
-      actualKrw      = Math.floor(krw / (1 + feeRate));
-      // actualKrw(KRW) ÷ (KRW/coin) = coin 수량
-      coinAmount     = actualKrw / rates[coin];
+      feeRate = kimpRate + 0.055;
+      actualKrw = Math.floor(krw / (1 + feeRate));
+      coinAmount = actualKrw / rates[coin];
     } catch { await interaction.editReply({ content: "❌ 환율 조회 실패. 잠시 후 다시 시도해주세요." }); return; }
 
-    if (!coinAmount || !isFinite(coinAmount) || isNaN(coinAmount)) {
-      await interaction.editReply({ content: `❌ ${coin} 시세 조회에 실패했습니다. 잠시 후 다시 시도해주세요.` });
-      return;
-    }
+    if (!coinAmount || !isFinite(coinAmount) || isNaN(coinAmount)) { await interaction.editReply({ content: `❌ ${coin} 시세 조회에 실패했습니다. 잠시 후 다시 시도해주세요.` }); return; }
 
-    const feeKrw     = krw - actualKrw;
+    const feeKrw = krw - actualKrw;
     const feePercent = (feeRate * 100).toFixed(2);
-
     pendingTransfers.set(interaction.user.id, { coin, address, coinAmount, krw, actualKrw, feeKrw, userTag });
-    await interaction.editReply({
-      components: [uiSendConfirm({ coin, address, krw, feeKrw, feePercent, actualKrw, coinAmount, rates })],
-      flags: MessageFlags.IsComponentsV2,
-    });
+    await interaction.editReply({ components: [uiSendConfirm({ coin, address, krw, feeKrw, feePercent, actualKrw, coinAmount, rates })], flags: MessageFlags.IsComponentsV2 });
   }
 
-  // 계산기 모달: 대행 수수료 5.5% + 현재 김프 반영 + "그대로 받으려면" 역산
   if (interaction.customId.startsWith("calc_modal_")) {
     await interaction.deferReply({ ephemeral: true });
     const coin = interaction.customId.replace("calc_modal_", "");
     const krw  = parseFloat(interaction.fields.getTextInputValue("calc_krw").replace(/,/g, ""));
-
     if (isNaN(krw) || krw <= 0) { await interaction.editReply({ content: "❌ 유효하지 않은 금액입니다." }); return; }
 
     let feeRate = 0.08;
     try {
       const rates = await getRates();
       const kimpRate = Math.max(0, (rates.btcKimp ?? 0) / 100);
-      feeRate = kimpRate + 0.08;
-    } catch (e) {
-      console.warn("계산기 김프 조회 실패, 기본 5.5%만 적용:", e.message);
-    }
+      feeRate = kimpRate + 0.055;
+    } catch (e) { }
 
-    const feeKrw       = Math.round(krw * feeRate);
-    const receivedKrw  = krw - feeKrw;
-    // 입력한 금액을 수수료 차감 없이 "그대로" 받으려면 필요한 총 포인트
-    const totalNeeded  = Math.ceil(krw / (1 - feeRate));
-    const extraNeeded  = totalNeeded - krw;
-    const feePercent   = (feeRate * 100).toFixed(2);
+    const feeKrw = Math.round(krw * feeRate);
+    const receivedKrw = krw - feeKrw;
+    const totalNeeded = Math.ceil(krw / (1 - feeRate));
+    const extraNeeded = totalNeeded - krw;
+    const feePercent = (feeRate * 100).toFixed(2);
 
     let coinPrice = 0, coinAmount = 0;
     try {
-      // 업비트에 상장되지 않은 코인이 많아 바이낸스 시세 + 실시간 환율로 계산
-      coinPrice  = await getCalcCoinKrwPrice(coin);
+      coinPrice = await getCalcCoinKrwPrice(coin);
       coinAmount = coinPrice > 0 ? receivedKrw / coinPrice : 0;
-    } catch (e) {
-      console.error("계산기 시세 조회 실패:", e.message);
-    }
+    } catch (e) {}
 
-    await interaction.editReply({
-      components: [uiCalcResult({ coin, krw, feeKrw, feePercent, receivedKrw, coinPrice, coinAmount, totalNeeded, extraNeeded })],
-      flags: MessageFlags.IsComponentsV2,
-    });
+    await interaction.editReply({ components: [uiCalcResult({ coin, krw, feeKrw, feePercent, receivedKrw, coinPrice, coinAmount, totalNeeded, extraNeeded })], flags: MessageFlags.IsComponentsV2 });
     return;
   }
 }
+
+/* ============================================================
+   자동 충전 관련 컨테이너 UI 빌더
+============================================================ */
+function buildWaitingContainer(senderName, amount) {
+  const now = new Date();
+  const timeStr = `${now.getHours()}시${now.getMinutes()}분`;
+  return new ContainerBuilder()
+    .setAccentColor(16118000)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("## <a:Orange_Loading:1524384379806154933> 충전 신청"),
+    )
+    .addSeparatorComponents(
+      new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`**충전 계좌** \n> **\`토스뱅크 1002-5957-5068\`**`),
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`**충전 금액**\n> **\`${amount.toLocaleString()}원\`**`),
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`**신청 시각 : \`${timeStr}\`**`),
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`-# **입금자명**과 **충전금액**이 **일치**하여야 합니다.`),
+    );
+}
+
+function buildDoneContainer(senderName, amount, balance) {
+  const now = new Date();
+  const timeStr = `${now.getHours()}시${now.getMinutes()}분`;
+  return new ContainerBuilder()
+    .setAccentColor(2403676)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("## <a:loading:1523137796389470470> 충전 완료"),
+    )
+    .addSeparatorComponents(
+      new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`**충전 금액 : \`${amount.toLocaleString()}원\`**\n**현재 잔액 : \`${balance.toLocaleString()}원\`**`),
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`**처리 시각 : \`${timeStr}\`**`),
+    );
+}
+
+/* ============================================================
+   Pushbullet 자동결제 웹소켓 스트림 연동
+============================================================ */
+export function startPushbulletStream(client) {
+  if (!PUSHBULLET_TOKEN) {
+      console.warn("⚠️ PUSHBULLET_TOKEN이 설정되지 않아 자동 충전 시스템을 시작할 수 없습니다.");
+      return;
+  }
+
+  const ws = new WebSocket(`wss://stream.pushbullet.com/websocket/${PUSHBULLET_TOKEN}`);
+  
+  ws.on('open', () => {
+      console.log(`[WS] 자동 충전 시스템 (Pushbullet) 스트림 연결 완료!`);
+  });
+
+  ws.on('message', (raw) => {
+      let data;
+      try { data = JSON.parse(raw.toString()); } catch { return; }
+      if (data.type === 'nop' || data.type !== 'push') return; 
+
+      const push = data.push || {};
+      if (push.type !== 'mirror') return; 
+      handleMirrorPush(push, client);
+  });
+
+  ws.on('close', (code, reason) => {
+      console.log(`[WS] Pushbullet 연결 끊김. 5초 후 재시도...`);
+      setTimeout(() => startPushbulletStream(client), 5000);
+  });
+
+  ws.on('error', (err) => {
+      console.error(`[WS ERROR] Pushbullet 오류:`, err.message);
+  });
+}
+
+async function handleMirrorPush(push, client) {
+  const title = push.title || "";
+  const body = push.body || "";
+
+  if (!title.includes('입금') && !body.includes('입금')) return;
+
+  const matchedAmount = title.match(/([\d,]+)원/)?.[1] || body.match(/([\d,]+)원/)?.[1];
+  if (!matchedAmount) return;
+  const pushAmount = Number(matchedAmount.replace(/,/g, ""));
+  
+  // 앱 환경에 맞추어 커스텀할 부분 (예: 카카오뱅크, 토스 등 포맷에 따라)
+  const pushSender = body.split("→")[0].trim().split(" ")[0].trim(); // 홍길동 → 000 계좌... 
+
+  const dbList = Array.from(pendingAutoCharges.values());
+  const normalizedPushSender = normalizeSenderName(pushSender);
+  const target = dbList.find(x =>
+    x.amount === pushAmount &&
+    normalizeSenderName(x.senderName) === normalizedPushSender &&
+    x.status === "waiting"
+  );
+
+  if (!target) {
+    console.warn("[AUTO_CHARGE] 입금 알림과 대기 건 매칭 실패", {
+      pushAmount,
+      pushSender,
+      normalizedPushSender,
+      waiting: dbList
+        .filter(x => x.status === "waiting")
+        .map(x => ({ amount: x.amount, senderName: x.senderName }))
+    });
+    return;
+  }
+
+  // DB 매칭 성공 시 자동 처리 시작
+  clearTimeout(target.timeoutId);
+  target.status = "done";
+
+  // 포인트 충전
+  addPoints(target.userId, target.amount);
+  const currentBalance = getPoints(target.userId);
+
+  // 디스코드 메시지 '충전 완료'로 수정
+  const doneContainer = buildDoneContainer(target.senderName, target.amount, currentBalance);
+  target.interaction.editReply({
+      components: [doneContainer],
+      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral
+  }).catch(() => {});
+
+  // 성공 로그 발송
+  await sendLog(client, "success", {
+      action: "자동 결제 승인",
+      유저: `<@${target.userId}>`,
+      입금자: target.senderName,
+      금액: `${target.amount.toLocaleString()}원`,
+      admin: "SYSTEM (Pushbullet)"
+  });
+
+  // 역할/등급 업그레이드 여부 확인
+  if (target.interaction.guild) {
+      const newGrade = await assignGradeRole(target.interaction.guild, target.userId);
+      if (newGrade) {
+          try { 
+              const user = await client.users.fetch(target.userId);
+              await user.send({ components: [uiGradeUp(newGrade)], flags: MessageFlags.IsComponentsV2 }); 
+          } catch {}
+      }
+  }
+
+  // 처리 끝난 데이터 메모리 삭제
+  pendingAutoCharges.delete(target.id);
+}
+
