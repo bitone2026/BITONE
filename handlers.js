@@ -878,7 +878,7 @@ function buildDoneContainer(senderName, amount, balance) {
 /* ============================================================
    Pushbullet 자동결제 웹소켓 스트림 연동
 ============================================================ */
-export function startPushbulletStream(client) {
+export function startPushbulletStream(client)
   if (!PUSHBULLET_TOKEN) {
       console.warn("⚠️ PUSHBULLET_TOKEN이 설정되지 않아 자동 충전 시스템을 시작할 수 없습니다.");
       return;
