@@ -474,7 +474,7 @@ async function handleSelect(interaction) {
     await interaction.update({ components: [uiNetworkSelect(interaction.values[0])], flags: MessageFlags.IsComponentsV2 });
     return;
   }
-  interaction.customId.startsWith("send_select_network_") {
+  interaction.customId.startsWith("send_select_network_")
     const coin = interaction.values[0];
     const placeholder = coin === "TRX" ? "T로 시작하는 주소" : coin === "LTC" ? "L 또는 M으로 시작하는 주소" : coin === "SOL" ? "SOL 지갑 주소" : "0x...";
     await interaction.showModal(
