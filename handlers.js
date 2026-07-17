@@ -463,37 +463,51 @@ async function handleButton(interaction) {
 /* ============================================================
    셀렉트 메뉴
 ============================================================ */
-async function handleSelect(interaction) {
-  if (interaction.customId === "history_select") {
-    const row = db.prepare("SELECT * FROM send_history WHERE id = ?").get(parseInt(interaction.values[0]));
-    if (!row) { await interaction.reply({ content: "❌ 내역을 찾을 수 없습니다.", ephemeral: true }); return; }
-    await interaction.reply({ components: [uiHistoryDetail(row)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-  if (interaction.customId === "send_select_coin")
-    await interaction.update({ components: [uiNetworkSelect(interaction.values[0])], flags: MessageFlags.IsComponentsV2 });
-    return;
-  }
-  interaction.customId.startsWith("send_select_network_")
-    const coin = interaction.values[0];
-    const placeholder = coin === "TRX" ? "T로 시작하는 주소" : coin === "LTC" ? "L 또는 M으로 시작하는 주소" : coin === "SOL" ? "SOL 지갑 주소" : "0x...";
-    await interaction.showModal(
-      new ModalBuilder().setCustomId(`send_modal_${coin}`).setTitle(`${coin} 송금`)
-        .addComponents(
-          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("send_address").setLabel("받는 주소").setStyle(TextInputStyle.Short).setPlaceholder(placeholder).setRequired(true)),
-          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("send_amount_krw").setLabel("송금 금액 (원화 KRW)").setStyle(TextInputStyle.Short).setPlaceholder("예: 5000").setRequired(true))
+if (interaction.customId === "send_select_coin") {
+  await interaction.update({
+    components: [uiNetworkSelect(interaction.values[0])],
+    flags: MessageFlags.IsComponentsV2,
+  });
+  return;
+}
+
+if (interaction.customId.startsWith("send_select_network_")) {
+  const coin = interaction.values[0];
+
+  const placeholder =
+    coin === "TRX"
+      ? "T로 시작하는 주소"
+      : coin === "LTC"
+      ? "L 또는 M으로 시작하는 주소"
+      : coin === "SOL"
+      ? "SOL 지갑 주소"
+      : "0x...";
+
+  await interaction.showModal(
+    new ModalBuilder()
+      .setCustomId(`send_modal_${coin}`)
+      .setTitle(`${coin} 송금`)
+      .addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId("send_address")
+            .setLabel("받는 주소")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder(placeholder)
+            .setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId("send_amount_krw")
+            .setLabel("송금 금액 (원화 KRW)")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("예: 5000")
+            .setRequired(true)
         )
-    );
-    return;
-  }
-  if (interaction.customId === "calc_select_coin") {
-    const coin = interaction.values[0];
-    await interaction.showModal(
-      new ModalBuilder().setCustomId(`calc_modal_${coin}`).setTitle(`${coin} 송금 계산기`)
-        .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("calc_krw").setLabel("계산할 금액 (원화 KRW)").setStyle(TextInputStyle.Short).setPlaceholder("예: 100000").setRequired(true)))
-    );
-    return;
-  }
+      )
+  );
+
+  return;
 }
 
 /* ============================================================
