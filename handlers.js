@@ -310,77 +310,96 @@ async function handleCommand(interaction) {
     await interaction.reply({ components: [uiAdjustTotalSpentDone(targetId, amount, newTotal)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-  if (commandName === "일일한도조정") {
+  if (commandName === "한도조정") {
     const targetId = extractUserId(interaction.options.getString("유저"));
-    const amount   = interaction.options.getInteger("금액");
-    if (amount === null) {
+    const limit    = interaction.options.getInteger("한도");
+    if (limit === null) {
       resetDailyLimitFor(targetId);
+      await sendLog(interaction.client, "info", { action: "일일한도 초기화", user: `<@${targetId}>`, admin: interaction.user.tag });
       await interaction.reply({ components: [uiLimitAdjusted(targetId, DAILY_LIMIT, true)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    } else {
-      setDailyLimitFor(targetId, amount);
-      await interaction.reply({ components: [uiLimitAdjusted(targetId, amount, false)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+      return;
     }
+    if (limit < 0) { await interaction.reply({ content: "❌ 한도는 0 이상이어야 합니다.", ephemeral: true }); return; }
+    setDailyLimitFor(targetId, limit);
+    await sendLog(interaction.client, "info", { action: "일일한도 조정", user: `<@${targetId}>`, 한도: limit.toLocaleString(), admin: interaction.user.tag });
+    await interaction.reply({ components: [uiLimitAdjusted(targetId, limit, false)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
+
   if (commandName === "자동충전한도") {
     const target = interaction.options.getUser("유저");
     const amount = interaction.options.getInteger("금액");
 
-    if (target) {
-      if (amount === null) {
-        resetAutoChargeLimitFor(target.id);
-        await interaction.reply({ content: `✅ <@${target.id}> 님의 개별 자동 충전 한도가 삭제되었습니다. (기본 한도 적용)`, ephemeral: true });
-      } else {
-        setAutoChargeLimitFor(target.id, amount);
-        await interaction.reply({ content: `✅ <@${target.id}> 님의 자동 충전 1회 한도가 **${amount.toLocaleString()}원**으로 설정되었습니다.`, ephemeral: true });
-      }
-    } else {
+    if (!target) {
+      // 유저 지정 없으면 전체 기본 한도 변경
       if (amount === null || amount < 0) { await interaction.reply({ content: "❌ 올바른 금액을 입력해주세요.", ephemeral: true }); return; }
       setAutoChargeLimit(amount);
-      await interaction.reply({ content: `✅ 전체 자동 충전 1회 기본 한도가 **${amount.toLocaleString()}원**으로 변경되었습니다.`, ephemeral: true });
+      await sendLog(interaction.client, "info", { action: "자동충전 기본 한도 변경", 한도: amount.toLocaleString(), admin: interaction.user.tag });
+      await interaction.reply({ content: `✅ 자동 충전 **기본** 1회 한도가 **${amount.toLocaleString()}원**으로 변경되었습니다.`, ephemeral: true });
+    } else {
+      // 특정 유저 개별 한도 변경
+      if (amount === null) {
+        // 금액 생략 시 개별 한도 초기화
+        resetAutoChargeLimitFor(target.id);
+        await sendLog(interaction.client, "info", { action: "유저 자동충전 한도 초기화", 유저: `<@${target.id}>`, admin: interaction.user.tag });
+        await interaction.reply({ content: `✅ <@${target.id}> 님의 자동 충전 한도가 기본값으로 초기화되었습니다.`, ephemeral: true });
+      } else {
+        if (amount < 0) { await interaction.reply({ content: "❌ 올바른 금액을 입력해주세요.", ephemeral: true }); return; }
+        setAutoChargeLimitFor(target.id, amount);
+        await sendLog(interaction.client, "info", { action: "유저 자동충전 한도 변경", 유저: `<@${target.id}>`, 한도: amount.toLocaleString(), admin: interaction.user.tag });
+        await interaction.reply({ content: `✅ <@${target.id}> 님의 자동 충전 1회 한도가 **${amount.toLocaleString()}원**으로 설정되었습니다.`, ephemeral: true });
+      }
     }
     return;
   }
 }
 
 /* ============================================================
-   버튼 핸들러
+   버튼
 ============================================================ */
 async function handleButton(interaction) {
   const id = interaction.customId;
 
-  if (handleTelecomButton(interaction)) return;
-  if (handleStartInputButton(interaction)) return;
-  if (handleCodeInputButton(interaction)) return;
-
-  if (id === "charge_open") {
-    await interaction.showModal(
-      new ModalBuilder().setCustomId("auto_charge_modal").setTitle("충전신청")
-        .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("charge_amount").setLabel("충전 금액 (원화 KRW)").setStyle(TextInputStyle.Short).setPlaceholder("예: 50000").setRequired(true)))
-    );
-    return;
-  }
+  if (id.startsWith("telecom_"))     return handleTelecomButton(interaction);
+  if (id.startsWith("start_input_")) return handleStartInputButton(interaction);
+  if (id.startsWith("code_input_"))  return handleCodeInputButton(interaction);
 
   if (id === "user_info_open") {
     const spent = getTotalSpent(interaction.user.id);
-    const history = getSendHistory(interaction.user.id);
     await interaction.reply({
       components: [uiMyInfo({
-        user: interaction.user,
-        grade: getGrade(spent),
-        points: getPoints(interaction.user.id),
-        spent,
-        dailySpent: getDailySpent(interaction.user.id),
-        dailyLimit: getDailyLimitFor(interaction.user.id),
-        history
+        user: interaction.user, grade: getGrade(spent), points: getPoints(interaction.user.id),
+        spent, dailySpent: getDailySpent(interaction.user.id), dailyLimit: getDailyLimitFor(interaction.user.id),
+        history: getSendHistory(interaction.user.id, 10),
       })],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral
+      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (id === "grade_info_open") {
     await interaction.reply({ components: [uiGradeInfo()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+    return;
+  }
+
+  // 💡 자동 충전 버튼 모달 연결 (DB에서 입금자명 확인 후 금액만 입력받음)
+  if (id === "charge_open") {
+    const userInfo = getVerifiedInfo(interaction.user.id);
+    if (!userInfo || !userInfo.realName) {
+      await interaction.reply({ content: "❌ 실명 인증 정보가 없습니다. 먼저 인증을 진행해주세요.", ephemeral: true });
+      return;
+    }
+    const realName = userInfo.realName;
+
+    await interaction.showModal(
+      new ModalBuilder().setCustomId("auto_charge_modal").setTitle("충전신청")
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("charge_amount").setLabel("충전 금액 (원)")
+              .setStyle(TextInputStyle.Short).setPlaceholder("예: 10000").setRequired(true)
+          )
+        )
+    );
     return;
   }
 
@@ -398,7 +417,7 @@ async function handleButton(interaction) {
     return;
   }
 
-  if (id === "send_confirm_yes") {
+  if (id === "send_confirm") {
     if (activeSending.has(interaction.user.id)) { await interaction.reply({ content: "⏳ 이미 송금이 진행 중입니다.", ephemeral: true }); return; }
     await interaction.deferUpdate();
     const pending = pendingTransfers.get(interaction.user.id);
@@ -422,7 +441,7 @@ async function handleButton(interaction) {
 
     const actualCoinAmount = result.receivedQty ?? coinAmount;
     try {
-      await interaction.editReply({ components: [uiSendComplete({ coin, coinAmount: actualCoinAmount, krw, address, hash: result.hash })], flags: MessageFlags.IsComponentsV2 });
+      await interaction.editReply({ components: [uiSendComplete({ coin, coinAmount: actualCoinAmount, krw, address, result })], flags: MessageFlags.IsComponentsV2 });
       await sendLog(interaction.client, "success", { user: userTag, coin, address, amount: actualCoinAmount.toFixed(6), krw, hash: result.hash, explorer: result.explorer });
       recordSend(interaction.user.id, { coin, amount: actualCoinAmount, krw, address, hash: result.hash });
       await sendPublicPurchaseLog(interaction.client, { userId: interaction.user.id, coin, coinAmount: actualCoinAmount, krw });
@@ -445,7 +464,7 @@ async function handleButton(interaction) {
    셀렉트 메뉴
 ============================================================ */
 async function handleSelect(interaction) {
-  if (interaction.customId === "history_select") {
+  if (interaction.customId === "info_history_select") {
     const row = db.prepare("SELECT * FROM send_history WHERE id = ?").get(parseInt(interaction.values[0]));
     if (!row) { await interaction.reply({ content: "❌ 내역을 찾을 수 없습니다.", ephemeral: true }); return; }
     await interaction.reply({ components: [uiHistoryDetail(row)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
@@ -455,8 +474,8 @@ async function handleSelect(interaction) {
     await interaction.update({ components: [uiNetworkSelect(interaction.values[0])], flags: MessageFlags.IsComponentsV2 });
     return;
   }
-  if (interaction.customId.startsWith("send_select_network_")) {
-    const coin = interaction.customId.replace("send_select_network_", "");
+  if (interaction.customId === "send_select_network") {
+    const coin = interaction.values[0];
     const placeholder = coin === "TRX" ? "T로 시작하는 주소" : coin === "LTC" ? "L 또는 M으로 시작하는 주소" : coin === "SOL" ? "SOL 지갑 주소" : "0x...";
     await interaction.showModal(
       new ModalBuilder().setCustomId(`send_modal_${coin}`).setTitle(`${coin} 송금`)
@@ -498,7 +517,6 @@ async function handleModal(interaction) {
 
     if (isNaN(amount) || amount <= 0) { await interaction.reply({ content: "❌ 유효하지 않은 금액입니다.", ephemeral: true }); return; }
     const limit = getAutoChargeLimitFor(interaction.user.id);
-    
     // 💡 1인 1신청 중복 체크
     const isAlreadyPending = Array.from(pendingAutoCharges.values()).some(x => x.userId === interaction.user.id && x.status === 'waiting');
     if (isAlreadyPending) {
@@ -770,3 +788,4 @@ async function handleMirrorPush(push, client) {
   // 처리 끝난 데이터 메모리 삭제
   pendingAutoCharges.delete(target.id);
 }
+
