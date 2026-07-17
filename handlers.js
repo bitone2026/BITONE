@@ -633,39 +633,116 @@ async function handleModal(interaction) {
 
   // 나머지 모달들 (송금, 계산기 등 기존 동일)
   if (interaction.customId.startsWith("send_modal_")) {
-    await interaction.deferReply({ ephemeral: true });
-    const coin    = interaction.customId.replace("send_modal_", "");
-    const address = interaction.fields.getTextInputValue("send_address").trim();
-    const krw     = parseFloat(interaction.fields.getTextInputValue("send_amount_krw").replace(/,/g, ""));
-    const userTag = `${interaction.user.tag} (${interaction.user.id})`;
+  await interaction.deferReply({ ephemeral: true });
 
-    if (isNaN(krw) || krw <= 0) { await interaction.editReply({ content: "❌ 유효하지 않은 금액입니다." }); return; }
-    if ((coin === "BNB" || coin === "USDTBSC") && !ethers.isAddress(address)) { await interaction.editReply({ content: "❌ 유효하지 않은 BSC 주소입니다." }); return; }
-    if (coin === "SOL") {
-      try { new (await import("@solana/web3.js")).PublicKey(address); } catch { await interaction.editReply({ content: "❌ 유효하지 않은 SOL 주소입니다." }); return; }
-    }
+  const coin = interaction.customId.replace("send_modal_", "");
+  const address = interaction.fields.getTextInputValue("send_address").trim();
+  const krw = parseFloat(
+    interaction.fields.getTextInputValue("send_amount_krw").replace(/,/g, "")
+  );
+  const userTag = `${interaction.user.tag} (${interaction.user.id})`;
 
-    const balance = getPoints(interaction.user.id);
-    if (balance < krw) { await interaction.editReply({ components: [uiInsufficientPoints(krw, balance)], flags: MessageFlags.IsComponentsV2 }); return; }
-    const dailySpent = getDailySpent(interaction.user.id);
-    if (!checkDailyLimit(interaction.user.id, krw)) { await interaction.editReply({ components: [uiDailyLimitExceeded(dailySpent, krw, getDailyLimitFor(interaction.user.id))], flags: MessageFlags.IsComponentsV2 }); return; }
-
-    let rates, coinAmount, feeRate, actualKrw;
-    try {
-      rates = await getRates([coin]);
-      const kimpRate = Math.max(0, (rates.btcKimp ?? 0) / 100);
-      feeRate = kimpRate + 0.055;
-      actualKrw = Math.floor(krw / (1 + feeRate));
-      coinAmount = actualKrw / rates[coin];
-    } catch { await interaction.editReply({ content: "❌ 환율 조회 실패. 잠시 후 다시 시도해주세요." }); return; }
-
-    if (!coinAmount || !isFinite(coinAmount) || isNaN(coinAmount)) { await interaction.editReply({ content: `❌ ${coin} 시세 조회에 실패했습니다. 잠시 후 다시 시도해주세요.` }); return; }
-
-    const feeKrw = krw - actualKrw;
-    const feePercent = (feeRate * 100).toFixed(2);
-    pendingTransfers.set(interaction.user.id, { coin, address, coinAmount, krw, actualKrw, feeKrw, userTag });
-    await interaction.editReply({ components: [uiSendConfirm({ coin, address, krw, feeKrw, feePercent, actualKrw, coinAmount, rates })], flags: MessageFlags.IsComponentsV2 });
+  if (isNaN(krw) || krw <= 0) {
+    await interaction.editReply({ content: "❌ 유효하지 않은 금액입니다." });
+    return;
   }
+
+  if ((coin === "BNB" || coin === "USDTBSC") && !ethers.isAddress(address)) {
+    await interaction.editReply({ content: "❌ 유효하지 않은 BSC 주소입니다." });
+    return;
+  }
+
+  if (coin === "SOL") {
+    try {
+      new (await import("@solana/web3.js")).PublicKey(address);
+    } catch {
+      await interaction.editReply({ content: "❌ 유효하지 않은 SOL 주소입니다." });
+      return;
+    }
+  }
+
+  const balance = getPoints(interaction.user.id);
+
+  if (balance < krw) {
+    await interaction.editReply({
+      components: [uiInsufficientPoints(krw, balance)],
+      flags: MessageFlags.IsComponentsV2,
+    });
+    return;
+  }
+
+  const dailySpent = getDailySpent(interaction.user.id);
+
+  if (!checkDailyLimit(interaction.user.id, krw)) {
+    await interaction.editReply({
+      components: [
+        uiDailyLimitExceeded(
+          getDailyLimitFor(interaction.user.id),
+          dailySpent,
+          krw
+        ),
+      ],
+      flags: MessageFlags.IsComponentsV2,
+    });
+    return;
+  }
+
+  let rates, coinAmount, feeRate, actualKrw;
+
+  try {
+    rates = await getRates([coin]);
+
+    const kimpRate = Math.max(0, (rates.btcKimp ?? 0) / 100);
+    feeRate = kimpRate + 0.055;
+
+    actualKrw = Math.floor(krw / (1 + feeRate));
+    coinAmount = actualKrw / rates[coin];
+  } catch {
+    await interaction.editReply({
+      content: "❌ 환율 조회 실패. 잠시 후 다시 시도해주세요.",
+    });
+    return;
+  }
+
+  if (!coinAmount || !isFinite(coinAmount) || isNaN(coinAmount)) {
+    await interaction.editReply({
+      content: `❌ ${coin} 시세 조회에 실패했습니다. 잠시 후 다시 시도해주세요.`,
+    });
+    return;
+  }
+
+  const feeKrw = krw - actualKrw;
+  const feePercent = (feeRate * 100).toFixed(2);
+
+  const network = CHAIN_MAP[coin] ?? coin;
+  const totalNeeded = krw;
+
+  pendingTransfers.set(interaction.user.id, {
+    coin,
+    address,
+    coinAmount,
+    krw,
+    actualKrw,
+    feeKrw,
+    userTag,
+  });
+
+  await interaction.editReply({
+    components: [
+      uiSendConfirm({
+        coin,
+        network,
+        address,
+        krw,
+        coinAmount,
+        feeKrw,
+        totalNeeded,
+        feePercent,
+      }),
+    ],
+    flags: MessageFlags.IsComponentsV2,
+  });
+}
 
   if (interaction.customId.startsWith("calc_modal_")) {
     await interaction.deferReply({ ephemeral: true });
@@ -673,7 +750,7 @@ async function handleModal(interaction) {
     const krw  = parseFloat(interaction.fields.getTextInputValue("calc_krw").replace(/,/g, ""));
     if (isNaN(krw) || krw <= 0) { await interaction.editReply({ content: "❌ 유효하지 않은 금액입니다." }); return; }
 
-    let feeRate = 0.08;
+    let feeRate = 0.055;
     try {
       const rates = await getRates();
       const kimpRate = Math.max(0, (rates.btcKimp ?? 0) / 100);
