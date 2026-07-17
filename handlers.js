@@ -1,3 +1,4 @@
+import { CHAIN_MAP } from "./ui.js";
 import WebSocket from 'ws';
 import {
   ModalBuilder, TextInputBuilder, TextInputStyle,
