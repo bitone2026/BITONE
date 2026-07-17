@@ -470,7 +470,7 @@ async function handleSelect(interaction) {
     await interaction.reply({ components: [uiHistoryDetail(row)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-  if (interaction.customId === "send_select_coin") {
+  if (interaction.customId === "send_select_coin")
     await interaction.update({ components: [uiNetworkSelect(interaction.values[0])], flags: MessageFlags.IsComponentsV2 });
     return;
   }
