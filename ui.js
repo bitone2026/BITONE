@@ -1,723 +1,312 @@
-
+인증 로직이여
+import axios from "axios";
+import { URLSearchParams } from "url";
+import fs from "fs";
+import path from "path";
 import {
-  ContainerBuilder, TextDisplayBuilder, SeparatorBuilder, SeparatorSpacingSize,
-  ButtonBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder,
-  MessageFlags,
+  ContainerBuilder, TextDisplayBuilder, SeparatorBuilder,
+  ButtonBuilder, ButtonStyle, ActionRowBuilder,
+  MediaGalleryBuilder, AttachmentBuilder, MessageFlags,
+  ModalBuilder, TextInputBuilder, TextInputStyle,
 } from "discord.js";
+import { addVerifiedNice, findByPhoneHash } from "./db.js";
 
 /* ============================================================
-   공통 상수
+   세션 저장소
 ============================================================ */
 
-export const COIN_COLORS = {
-  BNB:     0xF0B90B,
-  USDTBSC: 0x26A17B,
-  TRX:     0xFF0013,
-  LTC:     0xA6A9AA,
-  SOL:     0x9945FF,
-};
-
-export const CHAIN_MAP = {
-  BNB: "BSC", USDT: "BSC", TRX: "TRX", LTC: "LTC", SOL: "SOL",
-};
-
-/**
- * 내부적으로는 "USDTBSC" 같은 코드를 쓰지만, 화면에는 그냥 "USDT"로 보여줌.
- * (wallet.js 등 백엔드 로직은 그대로 "USDTBSC" 코드를 사용해야 하므로 값 자체는 안 바꿈)
- */
-const COIN_DISPLAY_NAMES = { USDTBSC: "USDT" };
-function displayCoin(coin) {
-  return COIN_DISPLAY_NAMES[coin] ?? coin;
-}
+const verifySessions = {};
 
 /* ============================================================
-   메인 패널 상태
+   NICE 세션 생성
 ============================================================ */
 
-let _lastUpdated = null;
+async function makeSession(mobileCo) {
+  const res = await axios.get("https://bsb.scourt.go.kr/NiceCheck/checkplus_main.jsp");
+  const enc = res.data.split('name="EncodeData" value="')[1].split('">')[0];
 
-export async function buildMainContainer() {
-  let totalKrw = 0, btcKimp = null, failed = false;
-  try {
-    const { getBalancesKRW } = await import("./wallet.js");
-    const b  = await getBalancesKRW();
-    totalKrw = Math.round(b.totalKrw);
-    btcKimp  = b.rates.btcKimp;
-  } catch { failed = true; }
-
-  // 갱신 시각: 디스코드 타임스탬프 포맷 사용
-  // <t:UNIX:t> = 짧은 시각(유저 시간대 자동 반영), <t:UNIX:R> = "n분 전" 자동 실시간 갱신
-  const ts = Math.floor(Date.now() / 1000);
-
-  const kimpStr  = failed || btcKimp === null ? "조회 실패" : `${btcKimp >= 0 ? "+" : ""}${btcKimp.toFixed(2)}%`;
-  const stockStr = failed ? "조회 실패" : `${totalKrw.toLocaleString()}원`;
-
-  return [
-    new ContainerBuilder()
-    .setAccentColor(3066993)
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent("# BITONE"),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent("-# **비트원**에 오신것을 환영합니다!"),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`**실시간 재고**\n> **\`${stockStr}\`**`),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`**실시간 김프**\n> **\`${kimpStr}\`**`),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`-# <t:${ts}:t>에 갱신됨 (<t:${ts}:R>)`),
-    )
-    .addSeparatorComponents(
-        new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
-    )
-    .addActionRowComponents(
-        new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setStyle(ButtonStyle.Success)
-                    .setLabel("충전")
-                    .setCustomId("charge_open"),
-                new ButtonBuilder()
-                    .setStyle(ButtonStyle.Success)
-                    .setLabel("송금")
-                    .setCustomId("send_open_select"),
-                new ButtonBuilder()
-                    .setStyle(ButtonStyle.Secondary)
-                    .setLabel("내 정보")
-                    .setCustomId("user_info_open"),
-                new ButtonBuilder()
-                    .setStyle(ButtonStyle.Secondary)
-                    .setLabel("계산기")
-                    .setCustomId("calc_open"),
-            ),
-    ),
-  ];
-}
-
-export function uiBlacklisted() {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:Barrier:1523156080132231369> 이용이 제한되었습니다"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      "블랙리스트에 등록된 계정입니다.\n문의사항은 관리자에게 문의해주세요."
-    ));
-}
-
-export function uiBlacklistUpdated(action, userId, reason) {
-  const titleMap = {
-    "추가": "## ⛔ 블랙리스트 추가 완료",
-    "삭제": "## ✅ 블랙리스트 해제 완료",
-    "없음": "## ℹ️ 블랙리스트에 없는 유저입니다",
+  const baseHeaders = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Content-Type": "application/x-www-form-urlencoded",
   };
-  return new ContainerBuilder()
-    .setAccentColor(action === "삭제" ? 0x57F287 : action === "없음" ? 0xB0C4FF : 0xED4245)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(titleMap[action] ?? "## 블랙리스트"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**대상:** <@${userId}>\n` + (action === "추가" ? `**사유:** ${reason}` : "")
-    ));
-}
+  const cookieJar = {};
 
-export function uiBlacklistInfo(user, entry) {
-  return new ContainerBuilder()
-    .setAccentColor(0xffffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 🔍 블랙리스트 조회"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      entry
-        ? `**대상:** ${user}\n**사유:** ${entry.reason}\n**등록자:** ${entry.added_by}\n**등록일시:** ${new Date(entry.added_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}`
-        : `**대상:** ${user}\n블랙리스트에 등록되어 있지 않습니다.`
-    ));
-}
-
-export function uiManualVerifyDone(userId, realName) {
-  return new ContainerBuilder()
-    .setAccentColor(0xffffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 수동 인증 완료"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**대상:** <@${userId}>\n**이름:** ${realName}\n-# 관리자에 의해 수동으로 인증 처리되었습니다.`
-    ));
-}
-
-export function uiManualChargeDone(userId, amount, newBalance) {
-  return new ContainerBuilder()
-    .setAccentColor(amount >= 0 ? 0xffffff : 15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 잔액 조정 완료"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**대상:** <@${userId}>\n**조정 금액:** ${amount >= 0 ? "+" : ""}${amount.toLocaleString()}원\n**현재 잔액:** ${newBalance.toLocaleString()}원`
-    ));
-}
-
-/**
- * 공개 채널(PUBLIC_LOG_CHANNEL_ID)용 구매 감사 컨테이너
- */
-export function uiPurchaseThanks({ userId, coin, coinAmount, krw }) {
-  return new ContainerBuilder()
-    .setAccentColor(16446708)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### <a:e_1:1523192758674788562> 대행로그"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `-# **<@${userId}>님, 오늘도 저희 비트원 코인 송금 대행을 이용해 주셔서 감사합니다.**`
-    ))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("**이용금액**"))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**\`\`\`${krw.toLocaleString()}원\`\`\`**`));
-}
-
-/**
- * 공개 재고입고 알림 (PUBLIC_STOCK_CHANNEL_ID로 발송, 구매감사 로그와는 다른 채널)
- */
-export function uiStockRestockAlert(diffKrw) {
-  const roleId = process.env.STOCK_ROLE_ID;
-  const roleMention = roleId ? `<@&${roleId}>` : "@재고역할";
-  const clockStr = new Date().toLocaleTimeString("en-US", {
-    timeZone: "Asia/Seoul", hour: "numeric", minute: "2-digit", hour12: true,
-  }).replace(" ", "");
-
-  return new ContainerBuilder()
-    .setAccentColor(16448763)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## <a:Lightning:1523630284325781525>${roleMention}`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**\`\`\`${diffKrw.toLocaleString()}원이 입고 되었습니다.\`\`\`**`))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# **${clockStr}**`));
-}
-
-export function uiAdjustTotalSpentDone(userId, amount, newTotal) {
-  return new ContainerBuilder()
-    .setAccentColor(amount >= 0 ? 3066993 : 15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 누적송금 조정 완료"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**대상:** <@${userId}>\n**조정액:** ${amount >= 0 ? "+" : ""}${amount.toLocaleString()}원\n**새 누적송금:** ${newTotal.toLocaleString()}원`
-    ));
-}
-
-export function uiLimitAdjusted(userId, limit, isReset) {
-  return new ContainerBuilder()
-    .setAccentColor(3066993)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(isReset ? "## ✅ 일일한도 초기화 완료" : "## ✅ 일일한도 조정 완료"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      isReset
-        ? `**대상:** <@${userId}>\n기본 한도(${limit.toLocaleString()}원)로 초기화되었습니다.`
-        : `**대상:** <@${userId}>\n**새 일일한도:** ${limit.toLocaleString()}원`
-    ));
-}
-
-export function uiNoPermission() {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:Barrier:1523156080132231369> 권한이 없습니다"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      "이 기능은 **관리자만** 사용할 수 있습니다."
-    ));
-}
-
-export function uiChargeLimitExceeded(limit) {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:ExclamationMark:1523117077261455501> 충전 한도 초과"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `1회 최대 충전 가능 금액은 **${limit.toLocaleString()}원**입니다.\n금액을 확인 후 다시 신청해주세요.`
-    ));
-}
-
-export function uiAlreadyPendingCharge() {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:ExclamationMark:1523117077261455501> 중복 신청 제한"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      "현재 **대기 중인 충전 신청**이 있습니다.\n기존 신청이 처리되거나 만료된 후 다시 신청해주세요."
-    ));
-}
-
-/* ============================================================
-   점검 / 인증
-============================================================ */
-
-export function uiMaintenance() {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:Barrier:1523156080132231369> 긴급 점검 중"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      "현재 서비스 점검 중입니다.\n빠른 시간 내에 복구하겠습니다.\n\n-# 이용에 불편을 드려 죄송합니다."
-    ));
-}
-
-export function uiMaintenanceToggle(isOn) {
-  return new ContainerBuilder()
-    .setAccentColor(isOn ? 0xFF4500 : 0x57F287)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      isOn ? "## 🔧 긴급 점검 ON" : "## ✅ 점검 해제"
-    ))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      isOn
-        ? "긴급 점검 모드가 활성화되었습니다.\n모든 유저의 버튼/메뉴가 차단됩니다."
-        : "점검이 해제되었습니다.\n서비스가 정상 운영됩니다."
-    ));
-}
-
-export function uiVerify() {
-  return new ContainerBuilder()
-    .setAccentColor(0xffffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 본인인증"))
-    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      "**서비스 이용을 위해 본인인증이 필요합니다.**\n아래에서 통신사를 선택하세요."
-    ))
-    .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("telecom_SKT").setLabel("SKT").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("telecom_KT").setLabel("KT").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("telecom_LG").setLabel("LG U+").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("telecom_MVNO").setLabel("알뜰폰").setStyle(ButtonStyle.Primary).setDisabled(true),
-    ));
-}
-
-/* ============================================================
-   송금 플로우
-============================================================ */
-
-export function uiCoinSelect() {
-  return new ContainerBuilder()
-    .setAccentColor(0xFFFFFF)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 코인 선택"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("**송금할 코인을 선택해주세요.**"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder().setCustomId("send_select_coin").setPlaceholder("코인을 선택하세요")
-        .addOptions(
-          { label: "Binancecoin",  description: "BNB",  value: "BNB",     emoji: "<:BNB:1485581565873487954>" },
-          { label: "TetherUSD",    description: "USDT", value: "USDT",    emoji: "<:USDT:1485581569245581344>" },
-          { label: "Litecoin",     description: "LTC",  value: "LTC",     emoji: "<:Litecoin1:1485581687453646890>" },
-          { label: "TRON",         description: "TRX",  value: "TRX",     emoji: "<:TRX:1485581567786090527>" },
-          { label: "Solana",       description: "SOL",  value: "SOL",     emoji: "<:sol:1498294613939851415>" },
-        )
-    ));
-}
-
-export function uiNetworkSelect(coin) {
-  const NETWORKS = {
-    BNB:     [{ label: "BNB Smart Chain (BSC)", value: "BNB",     emoji: "<:BNB:1490243194846449754>" }],
-    USDT: [{ label: "BNB Smart Chain (BSC)", value: "USDT", emoji: "<:BNB:1490243194846449754>" }],
-    TRX:     [{ label: "TRON (TRX)",            value: "TRX",     emoji: "<:TRX:1485581567786090527>" }],
-    LTC:     [{ label: "Litecoin (LTC)",         value: "LTC",     emoji: "<:Litecoin1:1485581687453646890>" }],
-    SOL:     [{ label: "Solana (SOL)",           value: "SOL",     emoji: "<:sol:1498294613939851415>" }],
+  function extractCookies(r) {
+    (r.headers["set-cookie"] || []).forEach(cookie => {
+      const [pair] = cookie.split(";");
+      const [key, value] = pair.split("=");
+      cookieJar[key.trim()] = value ? value.trim() : "";
+    });
+  }
+  function getCookieString() {
+    return Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join("; ");
+  }
+  const post = async (url, data) => {
+    const r = await axios.post(url, new URLSearchParams(data).toString(), {
+      headers: { ...baseHeaders, Cookie: getCookieString() },
+    });
+    extractCookies(r); return r;
+  };
+  const get = async (url) => {
+    const r = await axios.get(url, {
+      headers: { ...baseHeaders, Cookie: getCookieString() },
+      responseType: "arraybuffer",
+    });
+    extractCookies(r); return r;
   };
 
-  const networkOptions = NETWORKS[coin];
-  if (!networkOptions) {
-    return new ContainerBuilder()
-      .setAccentColor(0xffffff)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        `## <a:ExclamationMark:1523117077261455501> 지원하지 않는 코인입니다.\n\`${coin}\``
-      ));
+  await post("https://nice.checkplus.co.kr/CheckPlusSafeModel/checkplus.cb", { m: "checkplusSerivce", EncodeData: enc });
+  await post("https://nice.checkplus.co.kr/cert/main/tracer", {});
+  await post("https://nice.checkplus.co.kr/cert/main/menu", {});
+
+  const r2       = await post("https://nice.checkplus.co.kr/cert/mobileCert/method", { selectMobileCo: mobileCo, os: "Windows" });
+  const certHash = r2.data.split('name="certInfoHash" value="')[1].split('">')[0];
+  const r3       = await post("https://nice.checkplus.co.kr/cert/mobileCert/sms/certification", { certInfoHash: certHash, mobileCertAgree: "Y" });
+  const svcInfo  = r3.data.split('const SERVICE_INFO = "')[1].split('";')[0];
+  const capVer   = r3.data.split('const captchaVersion = "')[1].split('";')[0];
+  const capImg   = await get(`https://nice.checkplus.co.kr/cert/captcha/image/${capVer}`);
+
+  return { img: Buffer.from(capImg.data), svc: svcInfo, getCookieString, baseHeaders };
+}
+
+/* ============================================================
+   SMS 발송 & 인증번호 확인
+============================================================ */
+
+async function sendSms(sessionData, name, co, b1, b2, phone, cap) {
+  const { svc, getCookieString, baseHeaders } = sessionData;
+  const h = { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "x-service-info": svc, "X-Requested-With": "XMLHttpRequest", Cookie: getCookieString() };
+  const r = await axios.post(
+    "https://nice.checkplus.co.kr/cert/mobileCert/sms/certification/proc",
+    new URLSearchParams({ userNameEncoding: encodeURIComponent(name), mobileCertMethod: "SMS", mobileCo: co, userName: name, myNum1: b1, myNum2: b2, mobileNo: phone, captchaAnswer: cap }).toString(),
+    { headers: h }
+  );
+  return typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+}
+
+async function verifyCode(sessionData, co, code) {
+  const { svc, getCookieString, baseHeaders } = sessionData;
+  const h = { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "x-service-info": svc, "X-Requested-With": "XMLHttpRequest", Cookie: getCookieString() };
+  const r = await axios.post(
+    "https://nice.checkplus.co.kr/cert/mobileCert/sms/confirm/proc",
+    new URLSearchParams({ mobileCo: co, certCode: code }).toString(),
+    { headers: h }
+  );
+  return typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+}
+
+/* ============================================================
+   Discord 인터랙션 핸들러 (NICE 전용)
+============================================================ */
+
+// 통신사 선택 버튼 처리
+export async function handleTelecomButton(interaction) {
+  const co = interaction.customId.replace("telecom_", "");
+
+  if (co === "MVNO") {
+    await interaction.reply({
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(0xffffff)
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 알뜰폰 선택"))
+          .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent("사용 중인 통신망을 선택하세요."))
+          .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
+          .addActionRowComponents(new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId("telecom_SKM").setLabel("SKT망").setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId("telecom_KTM").setLabel("KT망").setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId("telecom_LGM").setLabel("LG망").setStyle(ButtonStyle.Danger),
+          )),
+      ],
+      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+    });
+    return;
   }
 
-  return new ContainerBuilder()
-    .setAccentColor(0xFfffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 네트워크 선택"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**송금할 ${coin}의 네트워크를 선택해주세요.**`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder().setCustomId(`send_select_network_${coin}`).setPlaceholder("네트워크를 선택하세요")
-        .addOptions(networkOptions)
-    ));
+  // 세션 생성 & 캡챠 전송
+  await interaction.deferReply({ ephemeral: true });
+  const sessionData = await makeSession(co);
+
+  fs.mkdirSync("tmp", { recursive: true });
+  const fileName = `cap_${interaction.user.id}.png`;
+  const imgPath  = path.join("tmp", fileName);
+  fs.writeFileSync(imgPath, sessionData.img);
+
+  const serial = Math.floor(Math.random() * 900000) + 100000;
+  verifySessions[serial] = { d: sessionData, co, uid: interaction.user.id };
+
+  await interaction.followUp({
+    components: [
+      new ContainerBuilder()
+        .setAccentColor(0xffffff)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 본인인증"))
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent("아래 캡챠 이미지를 확인하고 **입력** 버튼을 눌러주세요."))
+        .addMediaGalleryComponents(new MediaGalleryBuilder().addItems(item => item.setURL(`attachment://${fileName}`)))
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
+        .addActionRowComponents(new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`start_input_${serial}`).setLabel("입력").setStyle(ButtonStyle.Success)
+        )),
+    ],
+    files: [new AttachmentBuilder(imgPath, { name: fileName })],
+    flags: MessageFlags.IsComponentsV2,
+    ephemeral: true,
+  });
+  fs.unlinkSync(imgPath);
 }
 
-export function uiInsufficientPoints(needed, current) {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:ExclamationMark:1523117077261455501> 잔액 부족"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `잔액이 부족합니다.\n**필요 금액:** ${needed.toLocaleString()}원\n**현재 잔액:** ${current.toLocaleString()}원`
-    ));
+// 캡챠 입력 버튼 → 모달
+export async function handleStartInputButton(interaction) {
+  const serial = parseInt(interaction.customId.replace("start_input_", ""));
+  if (!verifySessions[serial]) { await interaction.reply({ content: "세션이 만료되었습니다.", ephemeral: true }); return; }
+  await interaction.showModal(
+    new ModalBuilder()
+      .setCustomId(`info_modal_${serial}`)
+      .setTitle("본인인증")
+      .addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("nm").setLabel("이름").setPlaceholder("홍길동").setStyle(TextInputStyle.Short).setMinLength(2).setMaxLength(20)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("br").setLabel("생년월일+성별").setPlaceholder("0101013").setStyle(TextInputStyle.Short).setMinLength(7).setMaxLength(7)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("ph").setLabel("휴대폰번호").setPlaceholder("01012345678").setStyle(TextInputStyle.Short).setMinLength(11).setMaxLength(11)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("cp").setLabel("캡챠 (이미지 숫자)").setPlaceholder("123456").setStyle(TextInputStyle.Short).setMinLength(1).setMaxLength(10)),
+      )
+  );
 }
 
-export function uiDailyLimitExceeded(limit, spent, krw) {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:ExclamationMark:1523117077261455501> 일일 한도 초과"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `일일 송금 한도를 초과합니다.\n**일일 한도:** ${limit.toLocaleString()}원\n**오늘 송금:** ${spent.toLocaleString()}원\n**요청 금액:** ${krw.toLocaleString()}원`
-    ));
+// 인증번호 입력 버튼 → 모달
+export async function handleCodeInputButton(interaction) {
+  const serial = parseInt(interaction.customId.replace("code_input_", ""));
+  if (!verifySessions[serial]) { await interaction.reply({ content: "세션이 만료되었습니다.", ephemeral: true }); return; }
+  await interaction.showModal(
+    new ModalBuilder()
+      .setCustomId(`code_modal_${serial}`)
+      .setTitle("인증번호 입력")
+      .addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("cd").setLabel("인증번호").setPlaceholder("123456").setStyle(TextInputStyle.Short).setMinLength(6).setMaxLength(6))
+      )
+  );
 }
 
-export function uiSendConfirm({ coin, network, address, krw, coinAmount, feeKrw, totalNeeded, feePercent }) {
-  return new ContainerBuilder()
-    .setAccentColor(0xffffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 송금 확인"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**코인:** ${coin} (${network})\n` +
-      `**주소:** \`${address}\`\n` +
-      `**송금액:** ${krw.toLocaleString()}원 (약 ${coinAmount.toFixed(6)} ${coin})\n` +
-      `**수수료:** ${feeKrw.toLocaleString()}원 (${feePercent}%)\n` +
-      `**총 차감:** ${totalNeeded.toLocaleString()}원`
-    ))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("-# 주소를 다시 한번 확인해주세요. 송금 후에는 취소가 불가능합니다."))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("send_confirm_yes").setLabel("송금하기").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("send_confirm_no").setLabel("취소").setStyle(ButtonStyle.Danger),
-    ));
+// 개인정보 모달 제출
+export async function handleInfoModal(interaction) {
+  const serial = parseInt(interaction.customId.replace("info_modal_", ""));
+  const sd = verifySessions[serial];
+  if (!sd) { await interaction.reply({ content: "세션이 만료되었습니다.", ephemeral: true }); return; }
+
+  await interaction.deferReply({ ephemeral: true });
+  const nm = interaction.fields.getTextInputValue("nm");
+  const br = interaction.fields.getTextInputValue("br");
+  const ph = interaction.fields.getTextInputValue("ph");
+  const cp = interaction.fields.getTextInputValue("cp");
+
+  const result = await sendSms(sd.d, nm, sd.co, br.slice(0, -1), br.slice(-1), ph, cp);
+  if (result.code === "RETRY") {
+    await interaction.followUp({
+      components: [new ContainerBuilder().setAccentColor(0xff0000).addTextDisplayComponents(new TextDisplayBuilder().setContent("## ❌ 실패")).addSeparatorComponents(new SeparatorBuilder().setDivider(true)).addTextDisplayComponents(new TextDisplayBuilder().setContent(result.message))],
+      flags: MessageFlags.IsComponentsV2, ephemeral: true,
+    });
+    return;
+  }
+
+  verifySessions[serial] = { ...sd, nm, br, ph };
+  await interaction.followUp({
+    components: [
+      new ContainerBuilder()
+        .setAccentColor(0xffffcf)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 📨 인증번호 발송 완료"))
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent("문자로 받은 인증번호를 입력하세요. **(3분 유효)**"))
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
+        .addActionRowComponents(new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`code_input_${serial}`).setLabel("인증하기").setStyle(ButtonStyle.Success)
+        )),
+    ],
+    flags: MessageFlags.IsComponentsV2, ephemeral: true,
+  });
 }
 
-export function uiSendComplete({ coin, coinAmount, address, hash, krw, feeKrw, actualKrw, result }) {
-  const chain = CHAIN_MAP[coin] || "BSC";
-  const explorerBase = {
-    BSC: "https://bscscan.com/tx/",
-    TRX: "https://tronscan.org/#/transaction/",
-    LTC: "https://blockchair.com/litecoin/transaction/",
-    SOL: "https://solscan.io/tx/",
-  };
-  const url = (explorerBase[chain] || explorerBase.BSC) + (hash || result?.hash || "");
+// 인증번호 모달 제출
+export async function handleCodeModal(interaction) {
+  try {
+  const serial = parseInt(interaction.customId.replace("code_modal_", ""));
+  const sd = verifySessions[serial];
+  if (!sd) { await interaction.reply({ content: "세션이 만료되었습니다.", ephemeral: true }); return; }
 
-  return new ContainerBuilder()
-    .setAccentColor(3066993)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 송금 완료"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**송금액:** ${krw.toLocaleString()}원 (${coinAmount.toFixed(6)} ${coin})\n` +
-      `**실제 송금액:** ${actualKrw.toLocaleString()}원\n` +
-      `**수수료:** ${feeKrw.toLocaleString()}원\n` +
-      `**주소:** \`${address}\``
-    ))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel("트랜잭션 확인").setStyle(ButtonStyle.Link).setURL(url)
-    ));
-}
+  await interaction.deferReply({ ephemeral: true });
+  const result = await verifyCode(sd.d, sd.co, interaction.fields.getTextInputValue("cd"));
 
+  if (result.code === "SUCCESS") {
+    // 동일 전화번호로 다른 계정이 이미 인증됐는지 확인
+    const existing = findByPhoneHash(sd.ph);
+    if (existing && existing.discord_id !== sd.uid) {
+      await interaction.followUp({
+        components: [
+          new ContainerBuilder()
+            .setAccentColor(0xff0000)
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ❌ 인증 불가"))
+            .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+              "이미 다른 계정으로 인증된 전화번호입니다.\n동일 번호로 중복 인증은 허용되지 않습니다."
+            )),
+        ],
+        flags: MessageFlags.IsComponentsV2, ephemeral: true,
+      });
+      return;
+    }
 
-export function uiSendFail(reason) {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ❌ 송금 실패"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**사유:** ${reason}`));
-}
+    addVerifiedNice({ discordId: sd.uid, realName: sd.nm, birthday: sd.br, phone: sd.ph, telecom: sd.co });
+    delete verifySessions[serial];
 
-export function uiMyInfo({ user, grade, points, spent, dailySpent, dailyLimit, history }) {
-  return new ContainerBuilder()
-    .setAccentColor(16184050)
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`### ${user.username}님의 정보`),
-    )
-    .addSeparatorComponents(
-        new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`**잔액 : \`${points.toLocaleString()}원\`**\n**누적 송금 : \`${spent.toLocaleString()}원\`**\n**일일 한도 : \`${dailySpent.toLocaleString()}원/${dailyLimit.toLocaleString()}원\`**\n**내 등급 : *${grade.name}***`),
-    )
-    .addSeparatorComponents(
-        new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent("**코인 송금 내역**"),
-    )
-    .addActionRowComponents(
-        new ActionRowBuilder()
-            .addComponents(
-                new StringSelectMenuBuilder()
-                    .setCustomId("history_select")
-                    .setPlaceholder("송금 내역을 선택 해주세요")
-                    .addOptions(
-                      history.length > 0 
-                        ? history.map(h => ({
-                            label: `${new Date(h.created_at).toLocaleDateString()} - ${h.coin}`,
-                            description: `${h.krw.toLocaleString()}원 송금`,
-                            value: String(h.id)
-                          }))
-                        : [{ label: "내역 없음", value: "none", disabled: true }]
-                    ),
-            ),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent("-# **Txid와 송금내역을 확인 할수있습니다.**"),
-    );
-}
+    const now = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
 
-export function uiHistoryDetail(h) {
-  const chain = CHAIN_MAP[h.coin] || "BSC";
-  const explorerBase = {
-    BSC: "https://bscscan.com/tx/",
-    TRX: "https://tronscan.org/#/transaction/",
-    LTC: "https://blockchair.com/litecoin/transaction/",
-    SOL: "https://solscan.io/tx/",
-  };
-  const url = (explorerBase[chain] || explorerBase.BSC) + h.hash;
+    // 사용자에게 완료 메시지
+    await interaction.followUp({
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(0x00ff00)
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 인증 완료"))
+          .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `**이제 코인대행을 이용하실수 있습니다.**`
+          )),
+      ],
+      flags: MessageFlags.IsComponentsV2, ephemeral: true,
+    });
 
-  return new ContainerBuilder()
-    .setAccentColor(0xffffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 📜 상세 내역"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**일시:** ${new Date(h.created_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}\n` +
-      `**코인:** ${h.coin}\n` +
-      `**금액:** ${h.amount} ${h.coin} (${h.krw.toLocaleString()}원)\n` +
-      `**주소:** \`${h.address}\`\n` +
-      `**Hash:** \`${h.hash}\``
-    ))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel("트랜잭션 확인").setStyle(ButtonStyle.Link).setURL(url)
-    ));
-}
+    // 로그 채널에 인증 정보 전송
+    try {
+      const logChannelId = process.env.Vfchh;
+      if (logChannelId) {
+        const logChannel = await interaction.client.channels.fetch(logChannelId);
+        if (logChannel) {
+          await logChannel.send({
+            components: [
+              new ContainerBuilder()
+                .setAccentColor(0xffffff)
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 본인인증 완료 로그"))
+                .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+                  `**디스코드:** <@${sd.uid}> \`(${sd.uid})\`\n` +
+                  `**이름:** ${sd.nm}\n` +
+                  `**생년월일:** ${sd.br}\n` +
+                  `**전화번호:** ${sd.ph}\n` +
+                  `**통신사:** ${sd.co}\n` +
+                  `**인증일시:** ${now}`
+                )),
+            ],
+            flags: MessageFlags.IsComponentsV2,
+          });
+        }
+      }
+    } catch (e) { console.error("인증 로그 전송 실패:", e.message); }
 
-export function uiGradeUp(grade) {
-  return new ContainerBuilder()
-    .setAccentColor(16766720)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🎉 등급 상승: ${grade.name}`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `축하합니다! 누적 송금액이 기준을 달성하여 **${grade.name}** 등급으로 승급되었습니다.\n` +
-      (grade.lounge ? "이제 **전용 라운지** 채널을 이용하실 수 있습니다!" : "")
-    ));
-}
-
-export function uiAdminInfo(row, grade, points, spent) {
-  return new ContainerBuilder()
-    .setAccentColor(16184050)
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`### <@${row.discord_id}>님의 정보 (관리자)`),
-    )
-    .addSeparatorComponents(
-      new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
-    )
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(
-        `**실명 : \`${row.realName || row.real_name}\`**\n` +
-        `**잔액 : \`${points.toLocaleString()}원\`**\n` +
-        `**누적 송금 : \`${spent.toLocaleString()}원\`**\n` +
-        `**내 등급 : *${grade?.name ?? "일반"}***`
-      ),
-    )
-    .addSeparatorComponents(
-      new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
-    )
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(
-        `**생년월일 : \`${row.birthday}\`**\n` +
-        `**전화번호 : \`${row.phone}\`**\n` +
-        `**통신사 : \`${row.telecom}\`**\n` +
-        `**인증일시 : \`${new Date(row.verified_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}\`**`
-      ),
-    );
-}
-
-export function uiStockInfo(b) {
-  const fmt = (krw) => `₩${Math.round(krw).toLocaleString()}`;
-  const now  = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-
-  return new ContainerBuilder()
-    .setAccentColor(0xffffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 💰 실시간 지갑 재고"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**총 합계:** ${fmt(b.totalKrw)}\n\n` +
-      `**BNB:** ${b.BNB.amount.toFixed(4)} (${fmt(b.BNB.krw)})\n` +
-      `**USDT:** ${b.USDTBSC.amount.toFixed(2)} (${fmt(b.USDTBSC.krw)})\n` +
-      `**TRX:** ${b.TRX.amount.toFixed(2)} (${fmt(b.TRX.krw)})\n` +
-      `**LTC:** ${b.LTC.amount.toFixed(4)} (${fmt(b.LTC.krw)})\n` +
-      `**SOL:** ${b.SOL.amount.toFixed(4)} (${fmt(b.SOL.krw)})\n\n` +
-      `-# 기준 시각: ${now}`
-    ));
-}
-
-export function uiCalcCoinSelect() {
-  return new ContainerBuilder()
-    .setAccentColor(0xFFFFFF)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 계산기 - 코인 선택"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("**시세를 계산할 코인을 선택해주세요.**"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder().setCustomId("calc_select_coin").setPlaceholder("코인을 선택하세요")
-        .addOptions(
-          { label: "Binancecoin",  description: "BNB",        value: "BNB",     emoji: "<:BNB:1485581565873487954>" },
-          { label: "TetherUSD",    description: "USDT",       value: "USDT",    emoji: "<:USDT:1485581569245581344>" },
-          { label: "Litecoin",     description: "LTC",        value: "LTC",     emoji: "<:Litecoin1:1485581687453646890>" },
-          { label: "TRON",         description: "TRX",        value: "TRX",     emoji: "<:TRX:1485581567786090527>" },
-          { label: "Solana",       description: "SOL",        value: "SOL",     emoji: "<:sol:1498294613939851415>" },
-        )
-    ));
-}
-
-export function uiCalcResult({ coin, krw, feeKrw, feePercent, receivedKrw, coinPrice, coinAmount, totalNeeded, extraNeeded }) {
-  return new ContainerBuilder()
-    .setAccentColor(0xffffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### 📊 ${coin} 송금 계산 결과`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**입력 금액:** ${krw.toLocaleString()}원\n` +
-      `**수수료:** ${feeKrw.toLocaleString()}원 (${feePercent}%)\n` +
-      `**실제 송금액:** ${receivedKrw.toLocaleString()}원\n` +
-      `**코인 시세:** 1 ${coin} = ${Math.round(coinPrice).toLocaleString()}원\n` +
-      `**송금 수량:** **${coinAmount.toFixed(6)} ${coin}**\n\n` +
-      `**[팁]** ${krw.toLocaleString()}원을 딱 맞춰 보내려면 **${totalNeeded.toLocaleString()}원**을 충전해야 합니다. (추가 필요: ${extraNeeded.toLocaleString()}원)`
-    ));
-}
-
-export function uiBalanceAdjustedDM(amount, newBalance) {
-  return new ContainerBuilder()
-    .setAccentColor(amount >= 0 ? 0x57F287 : 0xED4245)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(amount >= 0 ? "## 💰 포인트 충전 완료" : "## 💸 포인트 차감 안내"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `관리자에 의해 포인트가 조정되었습니다.\n` +
-      `**조정 금액:** ${amount >= 0 ? "+" : ""}${amount.toLocaleString()}원\n` +
-      `**현재 잔액:** ${newBalance.toLocaleString()}원`
-    ));
-}
-
-/* ============================================================
-   추가/복구된 충전 관련 UI (오류 해결용)
-============================================================ */
-
-export function uiChargeCreated(ticketChannel) {
-  return new ContainerBuilder()
-    .setAccentColor(0xffffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 충전 티켓 생성 완료"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `${ticketChannel} 채널이 생성되었습니다.\n잠시만 기다려주세요.`
-    ));
-}
-
-export function uiChargeTicket(userId, username, amount) {
-  return new ContainerBuilder()
-    .setAccentColor(0xFFFFFF)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 💳 충전 신청"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**사용자:** <@${userId}>\n**성명:** ${username}\n**충전 금액:** ${amount.toLocaleString()}원`
-    ))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`charge_approve_${userId}_${amount}`).setLabel("✅ 충전 승인").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`charge_reject_${userId}_${amount}`).setLabel("❌ 충전 거절").setStyle(ButtonStyle.Danger),
-    ));
-}
-
-export function uiChargeApproved(userId, amount, processorTag) {
-  return new ContainerBuilder()
-    .setAccentColor(3066993)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 충전 승인 완료"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `<@${userId}> 님의 **${amount.toLocaleString()}원** 충전이 승인되었습니다.\n-# 처리자: ${processorTag}`
-    ));
-}
-
-export function uiChargeApprovedDM(amount, currentPoints) {
-  return new ContainerBuilder()
-    .setAccentColor(3066993)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 충전 승인"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**${amount.toLocaleString()}원** 충전이 승인되었습니다!\n현재 잔액: **${currentPoints.toLocaleString()}원**`
-    ));
-}
-
-export function uiChargeRejected(userId, amount, processorTag) {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ❌ 충전 거절"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `<@${userId}> 님의 **${amount.toLocaleString()}원** 충전이 거절되었습니다.\n-# 처리자: ${processorTag}`
-    ));
-}
-
-export function uiChargeRejectedDM(amount) {
-  return new ContainerBuilder()
-    .setAccentColor(15158332)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ❌ 충전 거절"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `**${amount.toLocaleString()}원** 충전 신청이 거절되었습니다.\n문의사항은 관리자에게 문의해주세요.`
-    ));
-}
-
-/**
- * 등급/역할 안내 (누적 송금액 기준 자동 역할 부여 12단계)
- */
-export function uiGradeInfo() {
-  const lines = [
-    "**",
-    "<@&1523182081906315414>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +20,000,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523181735486165022>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +15,000,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523181324184322132>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +10,000,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523180335322632202>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +8,000,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523180037791289374>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +5,000,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523179745385119784>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +4,000,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523179433958051961>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +3,000,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523179067690455141>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +2,000,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523178341492854914>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +1,000,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523177478577848350>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +500,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523176786681139230>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +100,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "<@&1523174407835484311>",
-    "<a:arrow_arrow:1523190711586001025> 누적 금액 +10,000원",
-    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
-    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
-    "**",
-  ];
-
-  const footer =
-    "**<a:e_1:1523192758674788562> 현재 모든 역할등급 `수수료율`은 모두 동일합니다.\n" +
-    "<@&1523180335322632202> 등급 이상부턴 `전용라운지`가 제공됩니다.**";
-
-  return new ContainerBuilder()
-    .setAccentColor(2067276)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 🏅 등급 및 역할 안내"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(lines.join("\n")))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(footer));
+  } else {
+    await interaction.followUp({
+      components: [new ContainerBuilder().setAccentColor(0xff0000).addTextDisplayComponents(new TextDisplayBuilder().setContent("## ❌ 실패")).addSeparatorComponents(new SeparatorBuilder().setDivider(true)).addTextDisplayComponents(new TextDisplayBuilder().setContent(result.message || "오류가 발생했습니다."))],
+      flags: MessageFlags.IsComponentsV2, ephemeral: true,
+    });
+  }
+  } catch (e) {
+    console.error("handleCodeModal 오류:", e);
+    try { await interaction.followUp({ content: `❌ 오류가 발생했습니다: ${e.message}`, ephemeral: true }); } catch {}
+  }
 }
