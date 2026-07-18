@@ -98,10 +98,29 @@ async function verifyCode(sessionData, co, code) {
    Discord 인터랙션 핸들러 (NICE 전용)
 ============================================================ */
 
-// 통신사 선택 셀렉트 메뉴 처리
-export async function handleTelecomSelect(interaction) {
-  const selectedValue = interaction.values[0];
-  const co = selectedValue.replace("telecom_", "");
+// 통신사 선택 버튼 처리
+export async function handleTelecomButton(interaction) {
+  const co = interaction.customId.replace("telecom_", "");
+
+  if (co === "MVNO") {
+    await interaction.reply({
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(0xffffff)
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 알뜰폰 선택"))
+          .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent("사용 중인 통신망을 선택하세요."))
+          .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
+          .addActionRowComponents(new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId("telecom_SKM").setLabel("SKT망").setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId("telecom_KTM").setLabel("KT망").setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId("telecom_LGM").setLabel("LG망").setStyle(ButtonStyle.Danger),
+          )),
+      ],
+      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+    });
+    return;
+  }
 
   // 세션 생성 & 캡챠 전송
   await interaction.deferReply({ ephemeral: true });
