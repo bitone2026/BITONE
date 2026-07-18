@@ -277,29 +277,12 @@ export function uiVerify() {
     ))
     .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
     .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("telecom_select")
-        .setPlaceholder("통신사를 선택하세요")
-        .addOptions(
-          { 
-            label: "SKT", 
-            value: "telecom_SKT",
-            emoji: "<:SKT:1527964276659060826>" // SKT 상징색 이모지
-          },
-          { 
-            label: "KT", 
-            value: "telecom_KT",
-            emoji: "<:KT:1527963961771692102>" // KT 상징색 이모지
-          },
-          { 
-            label: "LG U+", 
-            value: "telecom_LG",
-            emoji: "<:LG:1527965464981016607>" // LG U+ 상징색 이모지
-          }
-        )
+      new ButtonBuilder().setCustomId("telecom_SKT").setLabel("SKT").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("telecom_KT").setLabel("KT").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("telecom_LG").setLabel("LG U+").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("telecom_MVNO").setLabel("알뜰폰").setStyle(ButtonStyle.Primary).setDisabled(true),
     ));
 }
-
 
 /* ============================================================
    송금 플로우
