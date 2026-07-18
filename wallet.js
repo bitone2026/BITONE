@@ -638,30 +638,32 @@ export async function sendLog(client, type, fields) {
    흡수되고 알림이 거의 안 뜨는 문제가 있었음. db.js의 config 테이블에
    기준값을 저장해서 재시작에도 이어지도록 함(이벤트로그 백업으로 자동 복구됨).
 ============================================================ */
-let _prevUsdtKrw = null;
-let _prevUsdtKrwLoaded = false;
+
+let _prevUsdtBal = null;
+let _prevUsdtBalLoaded = false;
 
 export async function checkAndNotifyRestock(client, onRestock) {
   try {
     // 최초 1회만 DB에서 마지막 기준값을 불러옴 (그 이후엔 메모리 값 사용)
-    if (!_prevUsdtKrwLoaded) {
-      const stored = getConfig("prev_usdt_krw");
-      _prevUsdtKrw = stored !== null ? parseFloat(stored) : null;
-      _prevUsdtKrwLoaded = true;
-    }
+    if (!_prevUsdtBalLoaded) {
+  const stored = getConfig("prev_usdt_bal");
+  _prevUsdtBal = stored !== null ? parseFloat(stored) : null;
+  _prevUsdtBalLoaded = true;
+}
 
     const b = await getBalancesKRW();
     console.log(`[재고체크] 현재 USDT잔고: ₩${Math.round(b.usdtKrw).toLocaleString()} / 기준값: ${_prevUsdtKrw === null ? "없음(최초)" : "₩" + Math.round(_prevUsdtKrw).toLocaleString()}`);
 
-    if (_prevUsdtKrw === null) {
-      _prevUsdtKrw = b.usdtKrw;
-      setConfig("prev_usdt_krw", b.usdtKrw); // 최초 기준값은 반드시 영속화
-      console.log("[재고체크] 최초 실행 - 기준값만 설정하고 이번엔 알림 없이 넘어감");
-      return;
-    }
+    if (_prevUsdtBal === null) {
+  _prevUsdtBal = b.usdtBal;
+  setConfig("prev_usdt_bal", b.usdtBal);
+  console.log("[재고체크] 최초 실행 - 기준값만 설정");
+  return;
+}
 
-    const diff = Math.round(b.usdtKrw - _prevUsdtKrw);
-    console.log(`[재고체크] 차이: ${diff >= 0 ? "+" : ""}₩${diff.toLocaleString()} (임계값: 1,000원 이상일 때 알림)`);
+const diffUsdt = b.usdtBal - _prevUsdtBal;
+const diff = Math.round(diffUsdt * b.rates.USDT);
+    console.log(`[재고체크] 현재 USDT잔고: ${b.usdtBal} USDT / 기준값: ${_prevUsdtBal === null ? "없음(최초)" : _prevUsdtBal + " USDT"}`);
     if (diff >= 1000) {
       const ch = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
       if (ch) await ch.send(`📦 MEXC USDT 입고 감지: +₩${diff.toLocaleString()} (총 ₩${Math.round(b.usdtKrw).toLocaleString()})`);
@@ -669,9 +671,8 @@ export async function checkAndNotifyRestock(client, onRestock) {
       if (typeof onRestock === "function") {
         await onRestock(diff, Math.round(b.usdtKrw));
       }
-      setConfig("prev_usdt_krw", b.usdtKrw); // 실제 입고가 감지된 시점의 기준값만 영속화 (매 tick 로그 스팸 방지)
+      setConfig("prev_usdt_bal", b.usdtBal); // 실제 입고가 감지된 시점의 기준값만 영속화 (매 tick 로그 스팸 방지)
     }
 
-    _prevUsdtKrw = b.usdtKrw; // 메모리상의 기준값은 매 tick마다 갱신
   } catch (e) { console.error("입고 알림 체크 실패:", e.message); }
 }
