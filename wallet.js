@@ -404,9 +404,9 @@ async function mexcMarketBuy(coin, usdtAmount) {
 /**
  * MEXC 출금 신청
  * 🔧 공식 문서 기준으로 두 가지를 수정:
- *   1. 엔드포인트: "/api/v3/capital/withdraw/apply"(구버전, 폐지 예정) →
- *      "/api/v3/capital/withdraw"(신규)
- *   2. 파라미터명: "network" → "netWork"(대문자 W, 신규 필드명)
+ * 1. 엔드포인트: "/api/v3/capital/withdraw/apply"(구버전, 폐지 예정) →
+ * "/api/v3/capital/withdraw"(신규)
+ * 2. 파라미터명: "network" → "netWork"(대문자 W, 신규 필드명)
  * 매수/잔고조회 등 기존에 잘 작동하던 요청들은 건드리지 않고, 이 함수만
  * 별도로 자체 서명 로직을 사용함. netWork 값에 "BEP20(BSC)"처럼 괄호가
  * 포함될 수 있어(MEXC 공식 예시에도 존재), encodeURIComponent가 놓치는
@@ -487,16 +487,31 @@ export async function processSwapTransfer(fromCoin, toCoin, krwAmount, toAddress
     throw new Error("수신 지갑 주소가 전달되지 않았습니다.");
   }
 
+  // --- [수정] 코인별 수수료율 반영 로직 추가 ---
+  const coin = toCoin.trim().toUpperCase();
+  let feeRate = 0;
+
+  if (coin.startsWith("BNB") || coin === "BSC") feeRate = 0.0026;
+  else if (coin.startsWith("USDT")) feeRate = 0.0092;
+  else if (coin.startsWith("SOL")) feeRate = 0.0048;
+  else if (coin.startsWith("TRX")) feeRate = -0.0329;
+  else if (coin.startsWith("LTC")) feeRate = 0.0039;
+
+  // 최종 적용할 금액 = 기존 krwAmount * (1 - 수수료율)
+  const finalKrwAmount = krwAmount * (1 - feeRate);
+  console.log(`[송금] ${coin} 수수료 적용: ${feeRate >= 0 ? '+' : ''}${(feeRate * 100).toFixed(2)}% (적용 전: ₩${krwAmount.toLocaleString()} → 적용 후: ₩${finalKrwAmount.toLocaleString()})`);
+  // --- [수정] 수수료 적용 끝 ---
+
   const { coin: mexcCoin, aliases } = resolveMexcCoin(toCoin);
 
-  console.log(`[1/4] 원화 ₩${krwAmount.toLocaleString()} → USDT 환산 중...`);
+  console.log(`[1/4] 원화 ₩${finalKrwAmount.toLocaleString()} → USDT 환산 중...`);
   const usdtKrw = await getUsdtKrw();
-  const usdtAmount = krwAmount / usdtKrw;
+  const usdtAmount = finalKrwAmount / usdtKrw;
   console.log(`👉 사용할 USDT: ${usdtAmount.toFixed(4)} USDT (환율 ₩${usdtKrw.toLocaleString()}/USDT)`);
 
   let receivedQty;
 
-  if (STABLECOINS.has(toCoin.trim().toUpperCase())) {
+  if (STABLECOINS.has(coin)) {
     // 목표 코인이 스테이블코인(USDT 계열)이면 매수 단계 없이 그대로 사용
     console.log(`[2/4] 목표 코인이 USDT 계열이라 매수 단계를 건너뜁니다.`);
     receivedQty = usdtAmount;
@@ -621,9 +636,11 @@ export async function sendLog(client, type, fields) {
     const ch = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
     if (!ch) return;
     const icon  = type === "success" ? "✅" : type === "fail" ? "❌" : "📋";
-    const lines = Object.entries(fields).map(([k, v]) => `**${k}**: ${v}`).join("\n");
+    const lines = Object.entries(fields).map(([k, v]) => `**${k}**: ${v}`).join("
+");
     const now   = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-    await ch.send(`${icon} **[${type.toUpperCase()}]** ${now}\n${lines}`);
+    await ch.send(`${icon} **[${type.toUpperCase()}]** ${now}
+${lines}`);
   } catch (e) { console.error("로그 전송 실패:", e.message); }
 }
 
