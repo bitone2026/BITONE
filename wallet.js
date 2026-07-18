@@ -652,7 +652,7 @@ export async function checkAndNotifyRestock(client, onRestock) {
 }
 
     const b = await getBalancesKRW();
-    console.log(`[재고체크] 현재 USDT잔고: ₩${Math.round(b.usdtKrw).toLocaleString()} / 기준값: ${_prevUsdtKrw === null ? "없음(최초)" : "₩" + Math.round(_prevUsdtKrw).toLocaleString()}`);
+    console.log(`[재고체크] 현재 USDT잔고: ${b.usdtBal} USDT / 기준값: ${_prevUsdtBal === null ? "없음(최초)" : _prevUsdtBal + " USDT"}`);
 
     if (_prevUsdtBal === null) {
   _prevUsdtBal = b.usdtBal;
