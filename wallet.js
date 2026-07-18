@@ -404,9 +404,9 @@ async function mexcMarketBuy(coin, usdtAmount) {
 /**
  * MEXC 출금 신청
  * 🔧 공식 문서 기준으로 두 가지를 수정:
- *   1. 엔드포인트: "/api/v3/capital/withdraw/apply"(구버전, 폐지 예정) →
- *      "/api/v3/capital/withdraw"(신규)
- *   2. 파라미터명: "network" → "netWork"(대문자 W, 신규 필드명)
+ * 1. 엔드포인트: "/api/v3/capital/withdraw/apply"(구버전, 폐지 예정) →
+ * "/api/v3/capital/withdraw"(신규)
+ * 2. 파라미터명: "network" → "netWork"(대문자 W, 신규 필드명)
  * 매수/잔고조회 등 기존에 잘 작동하던 요청들은 건드리지 않고, 이 함수만
  * 별도로 자체 서명 로직을 사용함. netWork 값에 "BEP20(BSC)"처럼 괄호가
  * 포함될 수 있어(MEXC 공식 예시에도 존재), encodeURIComponent가 놓치는
@@ -487,16 +487,32 @@ export async function processSwapTransfer(fromCoin, toCoin, krwAmount, toAddress
     throw new Error("수신 지갑 주소가 전달되지 않았습니다.");
   }
 
+  // --- [수정] LTC 코인만 수수료율 0.39% 반영 ---
+  const coin = toCoin.trim().toUpperCase();
+  let feeRate = 0;
+
+  if (coin.startsWith("LTC")) {
+    feeRate = 0.0039;
+  }
+
+  // 최종 적용할 금액 = 기존 krwAmount * (1 - 수수료율)
+  const finalKrwAmount = krwAmount * (1 - feeRate);
+  
+  if (feeRate !== 0) {
+      console.log(`[송금] ${coin} 수수료 적용: +${(feeRate * 100).toFixed(2)}% (적용 전: ₩${krwAmount.toLocaleString()} → 적용 후: ₩${finalKrwAmount.toLocaleString()})`);
+  }
+  // --- [수정] 수수료 적용 끝 ---
+
   const { coin: mexcCoin, aliases } = resolveMexcCoin(toCoin);
 
-  console.log(`[1/4] 원화 ₩${krwAmount.toLocaleString()} → USDT 환산 중...`);
+  console.log(`[1/4] 원화 ₩${finalKrwAmount.toLocaleString()} → USDT 환산 중...`);
   const usdtKrw = await getUsdtKrw();
-  const usdtAmount = krwAmount / usdtKrw;
+  const usdtAmount = finalKrwAmount / usdtKrw;
   console.log(`👉 사용할 USDT: ${usdtAmount.toFixed(4)} USDT (환율 ₩${usdtKrw.toLocaleString()}/USDT)`);
 
   let receivedQty;
 
-  if (STABLECOINS.has(toCoin.trim().toUpperCase())) {
+  if (STABLECOINS.has(coin)) {
     // 목표 코인이 스테이블코인(USDT 계열)이면 매수 단계 없이 그대로 사용
     console.log(`[2/4] 목표 코인이 USDT 계열이라 매수 단계를 건너뜁니다.`);
     receivedQty = usdtAmount;
@@ -646,24 +662,24 @@ export async function checkAndNotifyRestock(client, onRestock) {
   try {
     // 최초 1회만 DB에서 마지막 기준값을 불러옴 (그 이후엔 메모리 값 사용)
     if (!_prevUsdtBalLoaded) {
-  const stored = getConfig("prev_usdt_bal");
-  _prevUsdtBal = stored !== null ? parseFloat(stored) : null;
-  _prevUsdtBalLoaded = true;
-}
+      const stored = getConfig("prev_usdt_bal");
+      _prevUsdtBal = stored !== null ? parseFloat(stored) : null;
+      _prevUsdtBalLoaded = true;
+    }
 
     const b = await getBalancesKRW();
     console.log(`[재고체크] 현재 USDT잔고: ${b.usdtBal} USDT / 기준값: ${_prevUsdtBal === null ? "없음(최초)" : _prevUsdtBal + " USDT"}`);
 
     if (_prevUsdtBal === null) {
-  _prevUsdtBal = b.usdtBal;
-  setConfig("prev_usdt_bal", b.usdtBal);
-  console.log("[재고체크] 최초 실행 - 기준값만 설정");
-  return;
-}
+      _prevUsdtBal = b.usdtBal;
+      setConfig("prev_usdt_bal", b.usdtBal);
+      console.log("[재고체크] 최초 실행 - 기준값만 설정");
+      return;
+    }
 
-const diffUsdt = b.usdtBal - _prevUsdtBal;
-const diff = Math.round(diffUsdt * b.rates.USDT);
-    console.log(`[재고체크] 현재 USDT잔고: ${b.usdtBal} USDT / 기준값: ${_prevUsdtBal === null ? "없음(최초)" : _prevUsdtBal + " USDT"}`);
+    const diffUsdt = b.usdtBal - _prevUsdtBal;
+    const diff = Math.round(diffUsdt * b.rates.USDT);
+    
     if (diff >= 1000) {
       const ch = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
       if (ch) await ch.send(`📦 MEXC USDT 입고 감지: +₩${diff.toLocaleString()} (총 ₩${Math.round(b.usdtKrw).toLocaleString()})`);
@@ -676,3 +692,5 @@ const diff = Math.round(diffUsdt * b.rates.USDT);
 
   } catch (e) { console.error("입고 알림 체크 실패:", e.message); }
 }
+
+
