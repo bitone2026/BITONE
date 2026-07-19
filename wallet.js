@@ -678,7 +678,7 @@ export async function checkAndNotifyRestock(client, onRestock) {
 
     const diff = Math.round(b.usdtKrw - _prevUsdtKrw);
     console.log(`[재고체크] 차이: ${diff >= 0 ? "+" : ""}₩${diff.toLocaleString()} (임계값: 1,000원 이상일 때 알림)`);
-    if (diff >= 1000) {
+    if (diff >= 10000) {
       const ch = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
       if (ch) await ch.send(`📦 MEXC USDT 입고 감지: +₩${diff.toLocaleString()} (총 ₩${Math.round(b.usdtKrw).toLocaleString()})`);
 
