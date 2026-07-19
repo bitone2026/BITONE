@@ -315,7 +315,7 @@ function resolveMexcCoin(toCoin) {
   if (c === "USDTTRC") return { coin: "USDT", aliases: ["TRC20", "TRX"] };
   if (c === "USDTSOL") return { coin: "USDT", aliases: ["SOL"] };
   if (c === "USDT")    return { coin: "USDT", aliases: ["BSC", "BEP20"] };
-  if (c === "BNB" || c === "BSC") return { coin: "BNB", aliases: ["BEP20(BSC)", "BSC"] };
+  if (c === "BNB" || c === "BSC") return { coin: "BNB", aliases: ["BSC"] };
   return { coin: c, aliases: [c] };
 }
 
