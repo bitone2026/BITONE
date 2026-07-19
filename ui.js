@@ -388,12 +388,12 @@ export function uiSendComplete({ coin, coinAmount, address, hash, krw, feeKrw, a
 
   return new ContainerBuilder()
     .setAccentColor(3066993)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 송금 완료"))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:check:1523616787730661486> 송금 완료"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(
       `**송금액:** ${krw.toLocaleString()}원 (${coinAmount.toFixed(6)} ${coin})\n` +
       `**실제 송금액:** ${actualKrw.toLocaleString()}원\n` +
-      `**수수료:** ${feeKrw.toLocaleString()}원\n` +
+      `**수수료:** 5.5%\n` +
       `**주소:** \`${address}\``
     ))
     .addActionRowComponents(new ActionRowBuilder().addComponents(
