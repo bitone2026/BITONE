@@ -366,8 +366,7 @@ export function uiSendConfirm({ coin, network, address, krw, coinAmount, feeKrw,
       `**코인:** ${coin} (${network})\n` +
       `**주소:** \`${address}\`\n` +
       `**송금액:** ${krw.toLocaleString()}원 (약 ${coinAmount.toFixed(6)} ${coin})\n` +
-      `**수수료:** 5.5%` +
-      `**총 차감:** ${totalNeeded.toLocaleString()}원`
+      `**수수료:** 5.5%`
     ))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("-# 주소를 다시 한번 확인해주세요. 송금 후에는 취소가 불가능합니다."))
