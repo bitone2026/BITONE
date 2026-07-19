@@ -759,7 +759,7 @@ async function handleModal(interaction) {
     rates = await getRates([coin]);
 
     const kimpRate = Math.max(0, (rates.btcKimp ?? 0) / 100);
-    feeRate = kimpRate + 0.055;
+    feeRate = kimpRate + 0.07;
 
     actualKrw = Math.floor(krw / (1 + feeRate));
     coinAmount = actualKrw / rates[coin];
