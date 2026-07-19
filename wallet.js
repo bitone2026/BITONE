@@ -481,19 +481,19 @@ export async function processSwapTransfer(fromCoin, toCoin, krwAmount, toAddress
   let feeRate = 0;
 
   if (coin.startsWith("BNB") || coin.startsWith("BSC")) {
-    feeRate = 0.025;
+    feeRate = 0.014;
 }
 
 if (coin.startsWith("LTC")) {
-    feeRate = 0.018;
+    feeRate = 0.012;
 }
 
 if (coin.startsWith("TRX")) {
-    feeRate = -0.025;
+    feeRate = -0.038;
 }
 
 if (coin.startsWith("SOL")) {
-    feeRate = 0.023;
+    feeRate = 0.007;
 }
 
 if (coin.startsWith("USDT")) {
