@@ -492,7 +492,7 @@ export async function processSwapTransfer(fromCoin, toCoin, krwAmount, toAddress
   let feeRate = 0;
 
   if (coin.startsWith("LTC")) {
-    feeRate = 0.0039;
+    feeRate = 0.008;
   }
 
   // 최종 적용할 금액 = 기존 krwAmount * (1 - 수수료율)
