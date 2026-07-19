@@ -306,61 +306,47 @@ async function mexcRequest(method, endpoint, params = {}, signed = true) {
 /**
  * 내부 코인 코드 → { coin, aliases } (MEXC 통화 코드 및 출금 네트워크 후보)로 변환
  */
+// ... (위쪽 코드 생략, resolveMexcCoin부터 아래만 교체해도 됩니다)
+
 function resolveMexcCoin(toCoin) {
   const c = toCoin.trim().toUpperCase();
-  if (c === "USDTBSC") return { coin: "USDT", aliases: ["BSC", "BEP20(BSC)", "BEP20"] };
-  if (c === "USDTTRC") return { coin: "USDT", aliases: ["TRX", "TRC20"] };
-  if (c === "USDTSOL") return { coin: "USDT", aliases: ["SOL", "SOLANA"] };
+  // USDTBSC인 경우 BEP20(BSC)를 최우선 별칭으로 사용
+  if (c === "USDTBSC") return { coin: "USDT", aliases: ["BEP20(BSC)", "BSC"] };
+  if (c === "USDTTRC") return { coin: "USDT", aliases: ["TRC20", "TRX"] };
+  if (c === "USDTSOL") return { coin: "USDT", aliases: ["SOL"] };
   if (c === "USDT")    return { coin: "USDT", aliases: ["ETH", "ERC20"] };
-  if (c === "BNB" || c === "BSC") return { coin: "BNB", aliases: ["BSC", "BEP20(BSC)", "BEP20"] };
-  if (c === "TRX") return { coin: "TRX", aliases: ["TRX", "TRC20"] };
-  if (c === "LTC") return { coin: "LTC", aliases: ["LTC"] };
-  if (c === "SOL") return { coin: "SOL", aliases: ["SOL", "SOLANA"] };
+  if (c === "BNB" || c === "BSC") return { coin: "BNB", aliases: ["BEP20(BSC)", "BSC"] };
   return { coin: c, aliases: [c] };
 }
 
-// coin 설정(네트워크 목록) 캐시
-let _coinConfigCache = null;
-let _coinConfigCacheAt = 0;
-
-async function getMexcCoinConfig(forceRefresh = false) {
-  const now = Date.now();
-  if (!forceRefresh && _coinConfigCache && (now - _coinConfigCacheAt < 5 * 60_000)) {
-    return _coinConfigCache;
-  }
-  const data = await mexcRequest("get", "/api/v3/capital/config/getall", {}, true);
-  _coinConfigCache = data;
-  _coinConfigCacheAt = now;
-  return data;
-}
-
-/**
- * 코인의 실제 출금 가능한 네트워크 코드를 MEXC 설정에서 찾아옴
- * (별칭 목록 중 순서대로 매칭, 출금 가능(withdrawEnable)한 것 우선)
- * 🔧 MEXC 공식 문서 기준: "network" 필드는 곧 폐지 예정이고 "netWork"(대문자 W)가
- * 신규 필드이므로 netWork를 우선적으로 사용함.
- */
 async function resolveWithdrawNetwork(coin, aliases) {
+  // 💡 USDT 강제 네트워크 매핑 (디버그 로그에서 보신 DOTASSETHUB 같은 오류 방지)
+  if (coin.toUpperCase() === "USDT" && aliases.includes("BEP20(BSC)")) {
+     return "BEP20(BSC)";
+  }
+  if (coin.toUpperCase() === "USDT" && aliases.includes("TRC20")) {
+     return "TRC20";
+  }
+
   try {
     const config = await getMexcCoinConfig();
     const entry = config.find(c => c.coin?.toUpperCase() === coin.toUpperCase());
     if (entry?.networkList?.length) {
       for (const alias of aliases) {
         const match = entry.networkList.find(n =>
-          (n.netWork || n.network || "").toUpperCase().includes(alias.toUpperCase()) && n.withdrawEnable
+          (n.netWork || n.network || "").toUpperCase() === alias.toUpperCase() && n.withdrawEnable
         );
         if (match) return match.netWork || match.network;
       }
-      // 별칭이 안 맞으면 출금 가능한 아무 네트워크나 반환 (최후 수단)
-      const anyEnabled = entry.networkList.find(n => n.withdrawEnable);
-      if (anyEnabled) return anyEnabled.netWork || anyEnabled.network;
     }
   } catch (error) {
-    console.warn(`MEXC 코인 설정 조회 실패, 기본 네트워크 코드로 대체: ${error.message}`);
+    console.warn(`네트워크 조회 실패: ${error.message}`);
   }
-  // 설정 조회 실패 시 별칭 첫 번째 값을 그대로 시도
   return aliases[0];
 }
+// ... (이하 동일)
+
+
 
 /**
  * MEXC 시장가 매수: USDT로 coin을 즉시 매수
