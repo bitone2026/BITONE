@@ -366,7 +366,7 @@ export function uiSendConfirm({ coin, network, address, krw, coinAmount, feeKrw,
       `**코인:** ${coin} (${network})\n` +
       `**주소:** \`${address}\`\n` +
       `**송금액:** ${krw.toLocaleString()}원 (약 ${coinAmount.toFixed(6)} ${coin})\n` +
-      `**수수료:** ${feeKrw.toLocaleString()}원 (${feePercent}%)\n` +
+      `**수수료:** 5.5%` +
       `**총 차감:** ${totalNeeded.toLocaleString()}원`
     ))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
