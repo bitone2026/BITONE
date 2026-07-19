@@ -480,9 +480,25 @@ export async function processSwapTransfer(fromCoin, toCoin, krwAmount, toAddress
   const coin = toCoin.trim().toUpperCase();
   let feeRate = 0;
 
-  if (coin.startsWith("LTC")) {
-    feeRate = 0.008;
-  }
+  if (coin.startsWith("BNB") || coin.startsWith("BSC")) {
+    feeRate = 0.025;
+}
+
+if (coin.startsWith("LTC")) {
+    feeRate = 0.018;
+}
+
+if (coin.startsWith("TRX")) {
+    feeRate = -0.025;
+}
+
+if (coin.startsWith("SOL")) {
+    feeRate = 0.023;
+}
+
+if (coin.startsWith("USDT")) {
+    feeRate = 0.012;
+}
 
   // 최종 적용할 금액 = 기존 krwAmount * (1 - 수수료율)
   const finalKrwAmount = krwAmount * (1 - feeRate);
