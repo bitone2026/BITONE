@@ -428,7 +428,10 @@ async function mexcWithdraw(coin, network, address, amount) {
     timestamp: Date.now(),
     recvWindow: 5000,
   };
-
+ // 💡 디버그 로그 추가 구간
+  console.log("-----------------------------------------");
+  console.log("DEBUG: 출금 요청 파라미터:", JSON.stringify(params, null, 2));
+  console.log("-----------------------------------------");
   const queryString = Object.entries(params)
     .map(([k, v]) => `${k}=${strictEncode(v)}`)
     .join("&");
