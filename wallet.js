@@ -311,7 +311,7 @@ async function mexcRequest(method, endpoint, params = {}, signed = true) {
 function resolveMexcCoin(toCoin) {
   const c = toCoin.trim().toUpperCase();
   // USDTBSC인 경우 BEP20(BSC)를 최우선 별칭으로 사용
-  if (c === "USDTBSC") return { coin: "USDT", aliases: ["BEP20(BSC)", "BSC"] };
+  if (c === "USDTBSC") return { coin: "USDT", aliases: ["BSC", "BEP20(BSC)", "BEP20"] };
   if (c === "USDTTRC") return { coin: "USDT", aliases: ["TRC20", "TRX"] };
   if (c === "USDTSOL") return { coin: "USDT", aliases: ["SOL"] };
   if (c === "USDT")    return { coin: "USDT", aliases: ["ETH", "ERC20"] };
