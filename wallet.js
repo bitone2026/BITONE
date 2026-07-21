@@ -489,7 +489,7 @@ if (coin.startsWith("LTC")) {
 }
 
 if (coin.startsWith("TRX")) {
-    feeRate = 0.001;
+    feeRate = 0.0101;
 }
 
 if (coin.startsWith("SOL")) {
