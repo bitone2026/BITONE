@@ -277,7 +277,7 @@ export function uiVerify() {
     ))
     .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
     .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("telecom_SKT").setLabel("SKT").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("telecom_SK").setLabel("SKT").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("telecom_KT").setLabel("KT").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("telecom_LG").setLabel("LG U+").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("telecom_MVNO").setLabel("알뜰폰").setStyle(ButtonStyle.Primary).setDisabled(true),
