@@ -485,11 +485,11 @@ export async function processSwapTransfer(fromCoin, toCoin, krwAmount, toAddress
 }
 
 if (coin.startsWith("LTC")) {
-    feeRate = 0.012;
+    feeRate = 0.017;
 }
 
 if (coin.startsWith("TRX")) {
-    feeRate = 0.0101;
+    feeRate = 0.012;
 }
 
 if (coin.startsWith("SOL")) {
