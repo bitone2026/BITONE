@@ -1,4 +1,3 @@
-
 import {
   ContainerBuilder, TextDisplayBuilder, SeparatorBuilder, SeparatorSpacingSize,
   ButtonBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder,
@@ -46,7 +45,6 @@ export async function buildMainContainer() {
   } catch { failed = true; }
 
   // 갱신 시각: 디스코드 타임스탬프 포맷 사용
-  // <t:UNIX:t> = 짧은 시각(유저 시간대 자동 반영), <t:UNIX:R> = "n분 전" 자동 실시간 갱신
   const ts = Math.floor(Date.now() / 1000);
 
   const kimpStr  = failed || btcKimp === null ? "조회 실패" : `${btcKimp >= 0 ? "+" : ""}${btcKimp.toFixed(2)}%`;
@@ -54,46 +52,42 @@ export async function buildMainContainer() {
 
   return [
     new ContainerBuilder()
-    .setAccentColor(3066993)
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent("# BITONE"),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent("-# **비트원**에 오신것을 환영합니다!"),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`**실시간 재고**\n> **\`${stockStr}\`**`),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`**실시간 김프**\n> **\`${kimpStr}\`**`),
-    )
-    .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`-# <t:${ts}:t>에 갱신됨 (<t:${ts}:R>)`),
-    )
-    .addSeparatorComponents(
-        new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
-    )
-    .addActionRowComponents(
-        new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setStyle(ButtonStyle.Primary)
-                    .setLabel("충전")
-                    .setCustomId("charge_open"),
-                new ButtonBuilder()
-                    .setStyle(ButtonStyle.Primary)
-                    .setLabel("송금")
-                    .setCustomId("send_open_select"),
-                new ButtonBuilder()
-                    .setStyle(ButtonStyle.Primary)
-                    .setLabel("내 정보")
-                    .setCustomId("user_info_open"),
-                new ButtonBuilder()
-                    .setStyle(ButtonStyle.Primary)
-                    .setLabel("계산기")
-                    .setCustomId("calc_open"),
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent("### BITONE | 24h 코인 대행"),
+            )
+            .addSeparatorComponents(
+                new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
+            )
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent("**실시간 재고**\n-# 현재 **실시간 재고**를 확인 할수있어요.\n> **<#1529274587110572183>**"),
+            )
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent("**실시간 김프**\n-# 현재 **실시간 김프**를 확인 할수있어요.\n> **<#1529274698657960008>**"),
+            )
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent(`-# <t:${ts}:t>에 갱신됨 (<t:${ts}:R>)`),
+            )
+            .addActionRowComponents(
+                new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setStyle(ButtonStyle.Primary)
+                            .setLabel("충전")
+                            .setCustomId("charge_open"),
+                        new ButtonBuilder()
+                            .setStyle(ButtonStyle.Primary)
+                            .setLabel("송금")
+                            .setCustomId("send_open_select"),
+                        new ButtonBuilder()
+                            .setStyle(ButtonStyle.Primary)
+                            .setLabel("내 정보")
+                            .setCustomId("user_info_open"),
+                        new ButtonBuilder()
+                            .setStyle(ButtonStyle.Primary)
+                            .setLabel("계산기")
+                            .setCustomId("calc_open"),
+                    ),
             ),
-    ),
   ];
 }
 
@@ -163,7 +157,7 @@ export function uiPurchaseThanks({ userId, coin, coinAmount, krw }) {
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("### <a:e_1:1523192758674788562> 대행로그"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `-# **익명님, 오늘도 저희 비트원 코인 송금 대행을 이용해 주셔서 감사합니다.**`
+      `-# **<@${userId}>님, 오늘도 저희 비트원 코인 송금 대행을 이용해 주셔서 감사합니다.**`
     ))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("**이용금액**"))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**\`\`\`${krw.toLocaleString()}원\`\`\`**`));
@@ -229,14 +223,25 @@ export function uiChargeLimitExceeded(limit) {
     ));
 }
 
-export function uiAlreadyPendingCharge() {
-  return new ContainerBuilder()
+/**
+ * 🔧 [수정] 중복 신청 안내에 "기존 신청 취소" 버튼 추가 (chargeId를 알면 버튼 렌더링)
+ */
+export function uiAlreadyPendingCharge(chargeId) {
+  const container = new ContainerBuilder()
     .setAccentColor(15158332)
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:ExclamationMark:1523117077261455501> 중복 신청 제한"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(
       "현재 **대기 중인 충전 신청**이 있습니다.\n기존 신청이 처리되거나 만료된 후 다시 신청해주세요."
     ));
+
+  if (chargeId) {
+    container.addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`auto_charge_cancel_${chargeId}`).setLabel("기존 신청 취소").setStyle(ButtonStyle.Danger)
+    ));
+  }
+
+  return container;
 }
 
 /* ============================================================
@@ -277,7 +282,7 @@ export function uiVerify() {
     ))
     .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
     .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("telecom_SK").setLabel("SKT").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("telecom_SKT").setLabel("SKT").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("telecom_KT").setLabel("KT").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("telecom_LG").setLabel("LG U+").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("telecom_MVNO").setLabel("알뜰폰").setStyle(ButtonStyle.Primary).setDisabled(true),
@@ -352,32 +357,63 @@ export function uiCoinSelect() {
 
 export function uiNetworkSelect(coin) {
   const NETWORKS = {
-    BNB:     [{ label: "BNB Smart Chain (BSC)", value: "BNB",     emoji: "<:BNB:1490243194846449754>" }],
-    USDT: [{ label: "BNB Smart Chain (BSC)", value: "USDT", emoji: "<:BNB:1490243194846449754>" }],
-    TRX:     [{ label: "TRON (TRX)",            value: "TRX",     emoji: "<:TRX:1485581567786090527>" }],
-    LTC:     [{ label: "Litecoin (LTC)",         value: "LTC",     emoji: "<:Litecoin1:1485581687453646890>" }],
-    SOL:     [{ label: "Solana (SOL)",           value: "SOL",     emoji: "<:sol:1498294613939851415>" }],
+    BNB: [
+      { label: "BNB Smart Chain (BSC)", value: "BNB", emoji: "<:BNB:1490243194846449754>" },
+    ],
+    USDT: [
+      { label: "BNB Smart Chain (BSC)", value: "USDT", emoji: "<:BNB:1490243194846449754>" },
+    ],
+    TRX: [
+      { label: "TRON (TRX)", value: "TRX", emoji: "<:TRX:1485581567786090527>" },
+    ],
+    LTC: [
+      { label: "Litecoin (LTC)", value: "LTC", emoji: "<:Litecoin1:1485581687453646890>" },
+    ],
+    SOL: [
+      { label: "Solana (SOL)", value: "SOL", emoji: "<:sol:1498294613939851415>" },
+    ],
   };
 
   const networkOptions = NETWORKS[coin];
+
   if (!networkOptions) {
     return new ContainerBuilder()
       .setAccentColor(0xffffff)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        `## <a:ExclamationMark:1523117077261455501> 지원하지 않는 코인입니다.\n\`${coin}\``
-      ));
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+          `## <a:ExclamationMark:1523117077261455501> 지원하지 않는 코인입니다.\n\`${coin}\``
+        )
+      );
   }
 
   return new ContainerBuilder()
-    .setAccentColor(0xFfffff)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 네트워크 선택"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**송금할 ${coin}의 네트워크를 선택해주세요.**`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder().setCustomId(`send_select_network_${coin}`).setPlaceholder("네트워크를 선택하세요")
-        .addOptions(networkOptions)
-    ));
+    .setAccentColor(15987185)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        "### 구매하실 네트워크를 선택해주세요\n-# 아래 **드롭다운**에서 구매하실 **네트워크**를 **선택해주세요**"
+      )
+    )
+    .addSeparatorComponents(
+      new SeparatorBuilder()
+        .setSpacing(SeparatorSpacingSize.Small)
+        .setDivider(true)
+    )
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`send_select_network_${coin}`)
+          .setPlaceholder("구매하실 네트워크를 선택해주세요")
+          .addOptions(networkOptions)
+      )
+    )
+    .addSeparatorComponents(
+      new SeparatorBuilder()
+        .setSpacing(SeparatorSpacingSize.Small)
+        .setDivider(true)
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("-# **BITONE 코인송금**")
+    );
 }
 
 export function uiInsufficientPoints(needed, current) {
@@ -409,7 +445,8 @@ export function uiSendConfirm({ coin, network, address, krw, coinAmount, feeKrw,
       `**코인:** ${coin} (${network})\n` +
       `**주소:** \`${address}\`\n` +
       `**송금액:** ${krw.toLocaleString()}원 (약 ${coinAmount.toFixed(6)} ${coin})\n` +
-      `**수수료:** 5.5%`
+      `**수수료:** ${feeKrw.toLocaleString()}원 (${feePercent}%)\n` +
+      `**총 차감:** ${totalNeeded.toLocaleString()}원`
     ))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("-# 주소를 다시 한번 확인해주세요. 송금 후에는 취소가 불가능합니다."))
@@ -419,28 +456,22 @@ export function uiSendConfirm({ coin, network, address, krw, coinAmount, feeKrw,
     ));
 }
 
+/**
+ * 🔧 [수정] MEXC 출금 ID를 마치 블록체인 TXID인 것처럼 링크 버튼으로 보여주던 걸 제거함.
+ * 출금 신청 직후 시점엔 아직 실제 온체인 트랜잭션이 완료된 게 아니라서 "TXID 확인" 버튼이
+ * 혼란을 줬음. 진짜 TXID는 출금이 실제로 완료된 뒤 상세 송금 내역(uiHistoryDetail)에서만 보여줌.
+ */
 export function uiSendComplete({ coin, coinAmount, address, hash, krw, feeKrw, actualKrw, result }) {
-  const chain = CHAIN_MAP[coin] || "BSC";
-  const explorerBase = {
-    BSC: "https://bscscan.com/tx/",
-    TRX: "https://tronscan.org/#/transaction/",
-    LTC: "https://blockchair.com/litecoin/transaction/",
-    SOL: "https://solscan.io/tx/",
-  };
-  const url = (explorerBase[chain] || explorerBase.BSC) + (hash || result?.hash || "");
-
   return new ContainerBuilder()
     .setAccentColor(3066993)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:check:1523616787730661486> 송금 완료"))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 송금 완료"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(
       `**송금액:** ${krw.toLocaleString()}원 (${coinAmount.toFixed(6)} ${coin})\n` +
       `**실제 송금액:** ${actualKrw.toLocaleString()}원\n` +
-      `**수수료:** 5.5%\n` +
-      `**주소:** \`${address}\``
-    ))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel("트랜잭션 확인").setStyle(ButtonStyle.Link).setURL(url)
+      `**수수료:** ${feeKrw.toLocaleString()}원\n` +
+      `**주소:** \`${address}\`\n\n` +
+      `-# 출금이 완료되면 이 메시지가 실제 트랜잭션 정보로 업데이트됩니다.`
     ));
 }
 
@@ -501,9 +532,8 @@ export function uiHistoryDetail(h) {
     LTC: "https://blockchair.com/litecoin/transaction/",
     SOL: "https://solscan.io/tx/",
   };
-  const url = (explorerBase[chain] || explorerBase.BSC) + h.hash;
 
-  return new ContainerBuilder()
+  const container = new ContainerBuilder()
     .setAccentColor(0xffffff)
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 📜 상세 내역"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
@@ -512,11 +542,19 @@ export function uiHistoryDetail(h) {
       `**코인:** ${h.coin}\n` +
       `**금액:** ${h.amount} ${h.coin} (${h.krw.toLocaleString()}원)\n` +
       `**주소:** \`${h.address}\`\n` +
-      `**Hash:** \`${h.hash}\``
-    ))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      `**상태:** ${h.hash ? "완료" : "출금 처리중"}\n` +
+      (h.hash ? `**TXID:** \`${h.hash}\`` : "-# 아직 실제 트랜잭션이 완료되지 않았습니다.")
+    ));
+
+  // 🔧 실제 온체인 TXID가 있을 때만 링크 버튼 표시 (MEXC 출금ID인 동안엔 버튼 숨김)
+  if (h.hash && h.tx_confirmed) {
+    const url = (explorerBase[chain] || explorerBase.BSC) + h.hash;
+    container.addActionRowComponents(new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel("트랜잭션 확인").setStyle(ButtonStyle.Link).setURL(url)
     ));
+  }
+
+  return container;
 }
 
 export function uiGradeUp(grade) {
@@ -625,10 +663,6 @@ export function uiBalanceAdjustedDM(amount, newBalance) {
     ));
 }
 
-/* ============================================================
-   추가/복구된 충전 관련 UI (오류 해결용)
-============================================================ */
-
 export function uiChargeCreated(ticketChannel) {
   return new ContainerBuilder()
     .setAccentColor(0xffffff)
@@ -694,9 +728,6 @@ export function uiChargeRejectedDM(amount) {
     ));
 }
 
-/**
- * 등급/역할 안내 (누적 송금액 기준 자동 역할 부여 12단계)
- */
 export function uiGradeInfo() {
   const lines = [
     "**",
@@ -762,4 +793,41 @@ export function uiGradeInfo() {
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(lines.join("\n")))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(footer));
+}
+
+/* ============================================================
+   수익통계 (수수료 수익 집계)
+============================================================ */
+export function uiProfitStatsMenu() {
+  return new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 📊 수익통계"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("확인할 기간을 선택해주세요.\n-# 수익 = 송금 시 떼는 수수료 합계입니다."))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("profit_stats_daily").setLabel("일간").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("profit_stats_weekly").setLabel("주간").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("profit_stats_monthly").setLabel("월간").setStyle(ButtonStyle.Primary),
+    ));
+}
+
+export function uiProfitStats(periodLabel, stats) {
+  const fmt = (n) => `₩${Math.round(n).toLocaleString()}`;
+  return new ContainerBuilder()
+    .setAccentColor(0x57F287)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📊 ${periodLabel} 수익통계`))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**총 송금 건수:** ${stats.count.toLocaleString()}건\n` +
+      `**총 송금액(고객 요청 기준):** ${fmt(stats.totalKrw)}\n` +
+      `**수수료 수익 합계:** ${fmt(stats.totalFeeKrw)}\n` +
+      `**건당 평균 수익:** ${fmt(stats.count > 0 ? stats.totalFeeKrw / stats.count : 0)}`
+    ))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# 기간: ${stats.rangeLabel}`))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("profit_stats_daily").setLabel("일간").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("profit_stats_weekly").setLabel("주간").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("profit_stats_monthly").setLabel("월간").setStyle(ButtonStyle.Secondary),
+    ));
 }
