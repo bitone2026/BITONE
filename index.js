@@ -206,7 +206,7 @@ async function updateChannels(client) {
     const balanceChannel = await client.channels.fetch(BALANCE_CHANNEL_ID);
     const kimpChannel = await client.channels.fetch(KIMP_CHANNEL_ID);
 
-    const newBalanceName = `재고: ${totalKRW.toLocaleString()}원`;
+    const newBalanceName = `💰ㆍ${totalKRW.toLocaleString()}원`;
     const newKimpName = `📈ㆍ${kimp >= 0 ? "+" : ""}${kimp.toFixed(2)}%`;
 
     // 변경사항이 있을 때만 API 호출 (Rate Limit 방지)
