@@ -1,1007 +1,833 @@
-import { CHAIN_MAP } from "./ui.js";
-import WebSocket from 'ws';
 import {
-  ModalBuilder, TextInputBuilder, TextInputStyle,
-  ActionRowBuilder, ChannelType, PermissionFlagsBits, MessageFlags,
-  ContainerBuilder, TextDisplayBuilder, SeparatorBuilder, SeparatorSpacingSize
+  ContainerBuilder, TextDisplayBuilder, SeparatorBuilder, SeparatorSpacingSize,
+  ButtonBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder,
+  MessageFlags,
 } from "discord.js";
-import { ethers } from "ethers";
-
-import {
-  db, isVerified, getVerifiedInfo, addVerifiedNice,
-  getPoints, addPoints, deductPoints, getTotalSpent, adjustTotalSpent, getSendHistory,
-  getDailySpent, checkDailyLimit, DAILY_LIMIT, getDailyLimitFor, setDailyLimitFor, resetDailyLimitFor,
-  getGrade, GRADE_TIERS, getNotifiedGrade, setNotifiedGrade, recordSend,
-  getConfig, setConfig, getAutoChargeLimit, setAutoChargeLimit, getAutoChargeLimitFor, setAutoChargeLimitFor, resetAutoChargeLimitFor,
-} from "./db.js";
-import { getRates, processSwapTransfer, sendLog, getBalancesKRW, getCalcCoinKrwPrice } from "./wallet.js";
-import { logDbEvent } from "./dbEventLog.js";
-import { handleTelecomButton, handleStartInputButton, handleCodeInputButton, handleInfoModal, handleCodeModal } from "./nice.js";
-import {
-  buildMainContainer, uiMaintenance, uiMaintenanceToggle, uiVerify,
-  uiCoinSelect, uiNetworkSelect, uiInsufficientPoints, uiDailyLimitExceeded,
-  uiSendConfirm, uiSendComplete, uiSendFail, uiMyInfo, uiHistoryDetail,
-  uiChargeCreated, uiChargeTicket, uiChargeApproved, uiChargeApprovedDM,
-  uiChargeRejected, uiChargeRejectedDM, uiGradeUp,
-  uiAdminInfo, uiStockInfo, uiCalcCoinSelect, uiCalcResult, uiNoPermission,
-  uiBlacklisted, uiBlacklistUpdated, uiBlacklistInfo, uiManualChargeDone, uiManualVerifyDone,
-  uiPurchaseThanks, uiStockRestockAlert, uiGradeInfo, uiAdjustTotalSpentDone, uiLimitAdjusted,
-  uiBalanceAdjustedDM, uiChargeLimitExceeded, uiAlreadyPendingCharge,
-} from "./ui.js";
 
 /* ============================================================
-   설정 및 상태 관리
+   공통 상수
 ============================================================ */
-export const pendingTransfers = new Map();
-const activeSending = new Set();
-let _stockMessage   = null;
-let _isMaintenance  = getConfig("maintenance") === "true";
 
-// 💡 자동 충전 대기열 관리 Map
-export const pendingAutoCharges = new Map(); 
-const PUSHBULLET_TOKEN = process.env.PUSHBULLET_TOKEN || "";
-const BANK_INFO = process.env.BANK_INFO || "토스뱅크 1234-5678-9012 홍길동";
+export const COIN_COLORS = {
+  BNB:     0xF0B90B,
+  USDTBSC: 0x26A17B,
+  TRX:     0xFF0013,
+  LTC:     0xA6A9AA,
+  SOL:     0x9945FF,
+};
 
-/* ============================================================
-   블랙리스트
-============================================================ */
-db.exec(`
-  CREATE TABLE IF NOT EXISTS blacklist (
-    discord_id TEXT PRIMARY KEY,
-    reason     TEXT,
-    added_by   TEXT,
-    added_at   INTEGER
-  )
-`);
+export const CHAIN_MAP = {
+  BNB: "BSC", USDT: "BSC", TRX: "TRX", LTC: "LTC", SOL: "SOL",
+};
 
-function isBlacklisted(userId) {
-  return !!db.prepare("SELECT 1 FROM blacklist WHERE discord_id = ?").get(userId);
-}
-
-function getBlacklistEntry(userId) {
-  return db.prepare("SELECT * FROM blacklist WHERE discord_id = ?").get(userId);
-}
-
-export function addBlacklist(userId, reason, adminTag) {
-  db.prepare(
-    "INSERT OR REPLACE INTO blacklist (discord_id, reason, added_by, added_at) VALUES (?, ?, ?, ?)"
-  ).run(userId, reason, adminTag, Date.now());
-  logDbEvent("BLACKLIST_ADD", { discordId: userId, reason, adminTag });
-}
-
-export function removeBlacklist(userId) {
-  const info = db.prepare("DELETE FROM blacklist WHERE discord_id = ?").run(userId);
-  if (info.changes > 0) logDbEvent("BLACKLIST_REMOVE", { discordId: userId });
-  return info.changes > 0;
+/**
+ * 내부적으로는 "USDTBSC" 같은 코드를 쓰지만, 화면에는 그냥 "USDT"로 보여줌.
+ * (wallet.js 등 백엔드 로직은 그대로 "USDTBSC" 코드를 사용해야 하므로 값 자체는 안 바꿈)
+ */
+const COIN_DISPLAY_NAMES = { USDTBSC: "USDT" };
+function displayCoin(coin) {
+  return COIN_DISPLAY_NAMES[coin] ?? coin;
 }
 
 /* ============================================================
-   유틸리티 함수 모음
+   메인 패널 상태
 ============================================================ */
-async function archiveTicketChannel(channel, ticketUserId) {
-  const archiveCategoryId = process.env.TICKET_ARCHIVE_CATEGORY_ID;
-  if (!archiveCategoryId) {
-    return channel.delete().catch(() => {});
-  }
+
+let _lastUpdated = null;
+
+export async function buildMainContainer() {
+  let totalKrw = 0, btcKimp = null, failed = false;
   try {
-    await channel.setParent(archiveCategoryId, { lockPermissions: false });
-    if (ticketUserId) {
-      await channel.permissionOverwrites.edit(ticketUserId, { SendMessages: false }).catch(() => {});
-    }
-    if (!channel.name.startsWith("closed-")) {
-      await channel.setName(`closed-${channel.name}`.slice(0, 100)).catch(() => {});
-    }
-  } catch (e) {
-    console.error("티켓 보관 처리 실패:", e.message);
-  }
+    const { getBalancesKRW } = await import("./wallet.js");
+    const b  = await getBalancesKRW();
+    totalKrw = Math.round(b.totalKrw);
+    btcKimp  = b.rates.btcKimp;
+  } catch { failed = true; }
+
+  // 갱신 시각: 디스코드 타임스탬프 포맷 사용
+  const ts = Math.floor(Date.now() / 1000);
+
+  const kimpStr  = failed || btcKimp === null ? "조회 실패" : `${btcKimp >= 0 ? "+" : ""}${btcKimp.toFixed(2)}%`;
+  const stockStr = failed ? "조회 실패" : `${totalKrw.toLocaleString()}원`;
+
+  return [
+    new ContainerBuilder()
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent("### BITONE | 24h 코인 대행"),
+            )
+            .addSeparatorComponents(
+                new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
+            )
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent("**실시간 재고**\n-# 현재 **실시간 재고**를 확인 할수있어요.\n> **<#1529274587110572183>**"),
+            )
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent("**실시간 김프**\n-# 현재 **실시간 김프**를 확인 할수있어요.\n> **<#1529274698657960008>**"),
+            )
+            .addTextDisplayComponents(
+                new TextDisplayBuilder().setContent(`-# <t:${ts}:t>에 갱신됨 (<t:${ts}:R>)`),
+            )
+            .addActionRowComponents(
+                new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setStyle(ButtonStyle.Primary)
+                            .setLabel("충전")
+                            .setCustomId("charge_open"),
+                        new ButtonBuilder()
+                            .setStyle(ButtonStyle.Primary)
+                            .setLabel("송금")
+                            .setCustomId("send_open_select"),
+                        new ButtonBuilder()
+                            .setStyle(ButtonStyle.Primary)
+                            .setLabel("내 정보")
+                            .setCustomId("user_info_open"),
+                        new ButtonBuilder()
+                            .setStyle(ButtonStyle.Primary)
+                            .setLabel("계산기")
+                            .setCustomId("calc_open"),
+                    ),
+            ),
+  ];
 }
 
-const ADMIN_USER_IDS = new Set(
-  (process.env.ADMIN_USER_IDS || "").split(",").map(id => id.trim()).filter(Boolean)
-);
-function isAdmin(userId) { return ADMIN_USER_IDS.has(userId); }
-
-function extractUserId(input) {
-  if (!input) return input;
-  const match = input.trim().match(/^<@!?(\d+)>$/);
-  return match ? match[1] : input.trim();
+export function uiBlacklisted() {
+  return new ContainerBuilder()
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:Barrier:1523156080132231369> 이용이 제한되었습니다"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      "블랙리스트에 등록된 계정입니다.\n문의사항은 관리자에게 문의해주세요."
+    ));
 }
 
-function normalizeSenderName(value) {
-  return String(value ?? "").replace(/\s+/g, "").trim();
+export function uiBlacklistUpdated(action, userId, reason) {
+  const titleMap = {
+    "추가": "## ⛔ 블랙리스트 추가 완료",
+    "삭제": "## ✅ 블랙리스트 해제 완료",
+    "없음": "## ℹ️ 블랙리스트에 없는 유저입니다",
+  };
+  return new ContainerBuilder()
+    .setAccentColor(action === "삭제" ? 0x57F287 : action === "없음" ? 0xB0C4FF : 0xED4245)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(titleMap[action] ?? "## 블랙리스트"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**대상:** <@${userId}>\n` + (action === "추가" ? `**사유:** ${reason}` : "")
+    ));
 }
 
-export async function notifyPublicRestock(client, diffKrw) {
-  try {
-    const channelId = process.env.PUBLIC_STOCK_CHANNEL_ID;
-    if (!channelId) return;
-    const ch = await client.channels.fetch(channelId).catch(() => null);
-    if (!ch) return;
-    await ch.send({ components: [uiStockRestockAlert(diffKrw)], flags: MessageFlags.IsComponentsV2 });
-  } catch (e) {}
+export function uiBlacklistInfo(user, entry) {
+  return new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 🔍 블랙리스트 조회"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      entry
+        ? `**대상:** ${user}\n**사유:** ${entry.reason}\n**등록자:** ${entry.added_by}\n**등록일시:** ${new Date(entry.added_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}`
+        : `**대상:** ${user}\n블랙리스트에 등록되어 있지 않습니다.`
+    ));
 }
 
-async function sendPublicPurchaseLog(client, { userId, coin, coinAmount, krw }) {
-  try {
-    const channelId = process.env.PUBLIC_LOG_CHANNEL_ID;
-    if (!channelId) return;
-    const ch = await client.channels.fetch(channelId).catch(() => null);
-    if (!ch) return;
-    await ch.send({ components: [uiPurchaseThanks({ userId, coin, coinAmount, krw })], flags: MessageFlags.IsComponentsV2 });
-  } catch (e) {}
+export function uiManualVerifyDone(userId, realName) {
+  return new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 수동 인증 완료"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**대상:** <@${userId}>\n**이름:** ${realName}\n-# 관리자에 의해 수동으로 인증 처리되었습니다.`
+    ));
 }
 
-async function assignGradeRole(guild, userId) {
-  const grade = getGrade(getTotalSpent(userId));
-  if (!grade.roleId) return null;
-  if (getNotifiedGrade(userId) >= grade.threshold) return null;
-
-  try {
-    const member = await guild.members.fetch({ user: userId, force: true });
-    const allTierRoleIds = GRADE_TIERS.map(t => t.roleId);
-    const toRemove = allTierRoleIds.filter(id => id !== grade.roleId && member.roles.cache.has(id));
-    for (const id of toRemove) await member.roles.remove(id).catch(() => {});
-    if (!member.roles.cache.has(grade.roleId)) await member.roles.add(grade.roleId);
-    setNotifiedGrade(userId, grade.threshold);
-    return grade;
-  } catch { return null; }
+export function uiManualChargeDone(userId, amount, newBalance) {
+  return new ContainerBuilder()
+    .setAccentColor(amount >= 0 ? 0xffffff : 15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 잔액 조정 완료"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**대상:** <@${userId}>\n**조정 금액:** ${amount >= 0 ? "+" : ""}${amount.toLocaleString()}원\n**현재 잔액:** ${newBalance.toLocaleString()}원`
+    ));
 }
 
-export function getStockMessage() { return _stockMessage; }
-export function setStockMessage(msg) {
-  _stockMessage = msg;
-  setConfig("stock_channel_id", msg.channelId);
-  setConfig("stock_message_id", msg.id);
+/**
+ * 공개 채널(PUBLIC_LOG_CHANNEL_ID)용 구매 감사 컨테이너
+ */
+export function uiPurchaseThanks({ userId, coin, coinAmount, krw }) {
+  return new ContainerBuilder()
+    .setAccentColor(16446708)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### <a:e_1:1523192758674788562> 대행로그"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `-# **<@${userId}>님, 오늘도 저희 비트원 코인 송금 대행을 이용해 주셔서 감사합니다.**`
+    ))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("**이용금액**"))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**\`\`\`${krw.toLocaleString()}원\`\`\`**`));
 }
 
-export async function restoreStockMessage(client) {
-  const channelId = getConfig("stock_channel_id");
-  const messageId = getConfig("stock_message_id");
-  if (!channelId || !messageId) return;
-  try {
-    const channel = await client.channels.fetch(channelId);
-    _stockMessage  = await channel.messages.fetch(messageId);
-    await updateStockMessage();
-  } catch (e) {}
+/**
+ * 공개 재고입고 알림 (PUBLIC_STOCK_CHANNEL_ID로 발송, 구매감사 로그와는 다른 채널)
+ */
+export function uiStockRestockAlert(diffKrw) {
+  const roleId = process.env.STOCK_ROLE_ID;
+  const roleMention = roleId ? `<@&${roleId}>` : "@재고역할";
+  const clockStr = new Date().toLocaleTimeString("en-US", {
+    timeZone: "Asia/Seoul", hour: "numeric", minute: "2-digit", hour12: true,
+  }).replace(" ", "");
+
+  return new ContainerBuilder()
+    .setAccentColor(16448763)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## <a:Lightning:1523630284325781525>${roleMention}`))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**\`\`\`${diffKrw.toLocaleString()}원이 입고 되었습니다.\`\`\`**`))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# **${clockStr}**`));
 }
 
-export async function updateStockMessage() {
-  if (!_stockMessage) return;
-  try {
-    const components = _isMaintenance ? [uiMaintenance()] : await buildMainContainer();
-    await _stockMessage.edit({ components, flags: MessageFlags.IsComponentsV2 });
-  } catch (e) {}
+export function uiAdjustTotalSpentDone(userId, amount, newTotal) {
+  return new ContainerBuilder()
+    .setAccentColor(amount >= 0 ? 3066993 : 15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 누적송금 조정 완료"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**대상:** <@${userId}>\n**조정액:** ${amount >= 0 ? "+" : ""}${amount.toLocaleString()}원\n**새 누적송금:** ${newTotal.toLocaleString()}원`
+    ));
 }
 
-const ALLOW_WITHOUT_VERIFY = ["telecom_SK","telecom_KT","telecom_LG","telecom_MVNO","telecom_SKM","telecom_KTM","telecom_LGM"];
-function needsVerifyCheck(interaction) {
-  if (interaction.isChatInputCommand() || interaction.isModalSubmit()) return false;
-  if (interaction.isButton()) {
-    const id = interaction.customId;
-    if (ALLOW_WITHOUT_VERIFY.includes(id)) return false;
-    if (id.startsWith("start_input_")) return false;
-    if (id.startsWith("code_input_")) return false;
-    if (id.startsWith("charge_approve_")) return false;
-    if (id.startsWith("charge_reject_")) return false;
-  }
-  return true;
+export function uiLimitAdjusted(userId, limit, isReset) {
+  return new ContainerBuilder()
+    .setAccentColor(3066993)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(isReset ? "## ✅ 일일한도 초기화 완료" : "## ✅ 일일한도 조정 완료"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      isReset
+        ? `**대상:** <@${userId}>\n기본 한도(${limit.toLocaleString()}원)로 초기화되었습니다.`
+        : `**대상:** <@${userId}>\n**새 일일한도:** ${limit.toLocaleString()}원`
+    ));
 }
 
-/* ============================================================
-   인터랙션 메인 핸들러
-============================================================ */
-export async function handleInteraction(interaction) {
-  if (isBlacklisted(interaction.user.id) && !isAdmin(interaction.user.id)) {
-    const fn = (interaction.deferred || interaction.replied) ? "followUp" : "reply";
-    await interaction[fn]({ components: [uiBlacklisted()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-  if (interaction.isChatInputCommand()) return handleCommand(interaction);
-  if (_isMaintenance && !isAdmin(interaction.user.id)) {
-    const fn = (interaction.deferred || interaction.replied) ? "followUp" : "reply";
-    await interaction[fn]({ components: [uiMaintenance()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-  if (needsVerifyCheck(interaction) && !isVerified(interaction.user.id)) {
-    const fn = (interaction.deferred || interaction.replied) ? "followUp" : "reply";
-    await interaction[fn]({ components: [uiVerify()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-
-  if (interaction.isButton()) return handleButton(interaction);
-  if (interaction.isStringSelectMenu()) return handleSelect(interaction);
-  if (interaction.isModalSubmit()) return handleModal(interaction);
+export function uiNoPermission() {
+  return new ContainerBuilder()
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:Barrier:1523156080132231369> 권한이 없습니다"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      "이 기능은 **관리자만** 사용할 수 있습니다."
+    ));
 }
 
-/* ============================================================
-   슬래시 커맨드
-============================================================ */
-async function handleCommand(interaction) {
-  const { commandName } = interaction;
-  if (!isAdmin(interaction.user.id)) {
-    await interaction.reply({ components: [uiNoPermission()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
+export function uiChargeLimitExceeded(limit) {
+  return new ContainerBuilder()
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:ExclamationMark:1523117077261455501> 충전 한도 초과"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `1회 최대 충전 가능 금액은 **${limit.toLocaleString()}원**입니다.\n금액을 확인 후 다시 신청해주세요.`
+    ));
+}
+
+/**
+ * 🔧 [수정] 중복 신청 안내에 "기존 신청 취소" 버튼 추가 (chargeId를 알면 버튼 렌더링)
+ */
+export function uiAlreadyPendingCharge(chargeId) {
+  const container = new ContainerBuilder()
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:ExclamationMark:1523117077261455501> 중복 신청 제한"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      "현재 **대기 중인 충전 신청**이 있습니다.\n기존 신청이 처리되거나 만료된 후 다시 신청해주세요."
+    ));
+
+  if (chargeId) {
+    container.addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`auto_charge_cancel_${chargeId}`).setLabel("기존 신청 취소").setStyle(ButtonStyle.Danger)
+    ));
   }
 
-  if (commandName === "송금") {
-    const components = await buildMainContainer();
-    const msg = await interaction.reply({ components, flags: MessageFlags.IsComponentsV2, fetchReply: true });
-    setStockMessage(msg);
-    return;
-  }
-  if (commandName === "점검") {
-    _isMaintenance = interaction.options.getString("상태") === "on";
-    setConfig("maintenance", String(_isMaintenance));
-    await updateStockMessage();
-    await interaction.reply({ components: [uiMaintenanceToggle(_isMaintenance)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-  if (commandName === "정보조회") {
-    const targetId = extractUserId(interaction.options.getString("유저"));
-    const row = getVerifiedInfo(targetId);
-    if (!row) { await interaction.reply({ content: `❌ <@${targetId}> 는 인증된 유저가 아닙니다.`, ephemeral: true }); return; }
-    const spent = getTotalSpent(targetId);
-    await interaction.reply({
-      components: [uiAdminInfo(row, getGrade(spent), getPoints(targetId), spent)],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-    });
-    return;
-  }
-  if (commandName === "재고현황") {
-    await interaction.deferReply({ ephemeral: true });
-    try {
-      const b = await getBalancesKRW();
-      await interaction.editReply({ components: [uiStockInfo(b)], flags: MessageFlags.IsComponentsV2 });
-    } catch (e) { await interaction.editReply({ content: `❌ 조회 실패: ${e.message}` }); }
-    return;
-  }
-  if (commandName === "수동인증") {
-    const targetId = extractUserId(interaction.options.getString("유저"));
-    const realName = interaction.options.getString("이름");
-    const birthday = interaction.options.getString("생년월일");
-    const phone    = interaction.options.getString("전화번호");
-    const telecom  = interaction.options.getString("통신사");
-    addVerifiedNice({ discordId: targetId, realName, birthday, phone, telecom });
-    await sendLog(interaction.client, "info", { action: "수동 인증 처리", user: `<@${targetId}>`, name: realName, telecom, admin: interaction.user.tag });
-    await interaction.reply({ components: [uiManualVerifyDone(targetId, realName)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-  if (commandName === "블랙리스트") {
-    const action   = interaction.options.getString("동작");
-    const targetId = extractUserId(interaction.options.getString("유저"));
-    const reason   = interaction.options.getString("사유") || "사유 없음";
-    if (action === "추가") {
-      addBlacklist(targetId, reason, interaction.user.tag);
-      await sendLog(interaction.client, "info", { action: "블랙리스트 추가", user: `<@${targetId}>`, reason, admin: interaction.user.tag });
-      await interaction.reply({ components: [uiBlacklistUpdated("추가", targetId, reason)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    } else if (action === "삭제") {
-      const removed = removeBlacklist(targetId);
-      if (removed) await sendLog(interaction.client, "info", { action: "블랙리스트 해제", user: `<@${targetId}>`, admin: interaction.user.tag });
-      await interaction.reply({ components: [uiBlacklistUpdated(removed ? "삭제" : "없음", targetId, reason)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    } else if (action === "조회") {
-      const entry = getBlacklistEntry(targetId);
-      await interaction.reply({ components: [uiBlacklistInfo(`<@${targetId}>`, entry)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    } else {
-      await interaction.reply({ content: "❌ 동작 값이 올바르지 않습니다.", ephemeral: true });
-    }
-    return;
-  }
-  if (commandName === "잔액조정") {
-    const targetId = extractUserId(interaction.options.getString("유저"));
-    const amount   = interaction.options.getInteger("금액");
-    if (!amount || amount === 0) { await interaction.reply({ content: "❌ 유효하지 않은 금액입니다.", ephemeral: true }); return; }
-    addPoints(targetId, amount);
-    const newBalance = getPoints(targetId);
-    await sendLog(interaction.client, "info", { action: "잔액 조정", user: `<@${targetId}>`, amount: amount.toLocaleString(), balance: newBalance.toLocaleString(), admin: interaction.user.tag });
-    await interaction.reply({ components: [uiManualChargeDone(targetId, amount, newBalance)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    try { const user = await interaction.client.users.fetch(targetId); await user.send({ components: [uiBalanceAdjustedDM(amount, newBalance)], flags: MessageFlags.IsComponentsV2 }); } catch {}
-    return;
-  }
-  if (commandName === "누적송금조정") {
-    const targetId = extractUserId(interaction.options.getString("유저"));
-    const amount   = interaction.options.getInteger("금액");
-    if (!amount || amount === 0) { await interaction.reply({ content: "❌ 유효하지 않은 금액입니다.", ephemeral: true }); return; }
-    adjustTotalSpent(targetId, amount);
-    const newTotal = getTotalSpent(targetId);
-    await sendLog(interaction.client, "info", { action: "누적송금 조정", user: `<@${targetId}>`, 조정액: amount.toLocaleString(), 새누적: newTotal.toLocaleString(), admin: interaction.user.tag });
-    if (interaction.guild) {
-      const newGrade = await assignGradeRole(interaction.guild, targetId);
-      if (newGrade) { try { const user = await interaction.client.users.fetch(targetId); await user.send({ components: [uiGradeUp(newGrade)], flags: MessageFlags.IsComponentsV2 }); } catch {} }
-    }
-    await interaction.reply({ components: [uiAdjustTotalSpentDone(targetId, amount, newTotal)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-  if (commandName === "한도조정") {
-    const targetId = extractUserId(interaction.options.getString("유저"));
-    const limit    = interaction.options.getInteger("한도");
-    if (limit === null) {
-      resetDailyLimitFor(targetId);
-      await sendLog(interaction.client, "info", { action: "일일한도 초기화", user: `<@${targetId}>`, admin: interaction.user.tag });
-      await interaction.reply({ components: [uiLimitAdjusted(targetId, DAILY_LIMIT, true)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-      return;
-    }
-    if (limit < 0) { await interaction.reply({ content: "❌ 한도는 0 이상이어야 합니다.", ephemeral: true }); return; }
-    setDailyLimitFor(targetId, limit);
-    await sendLog(interaction.client, "info", { action: "일일한도 조정", user: `<@${targetId}>`, 한도: limit.toLocaleString(), admin: interaction.user.tag });
-    await interaction.reply({ components: [uiLimitAdjusted(targetId, limit, false)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-
-  if (commandName === "자동충전한도") {
-    const target = interaction.options.getUser("유저");
-    const amount = interaction.options.getInteger("금액");
-
-    if (!target) {
-      // 유저 지정 없으면 전체 기본 한도 변경
-      if (amount === null || amount < 0) { await interaction.reply({ content: "❌ 올바른 금액을 입력해주세요.", ephemeral: true }); return; }
-      setAutoChargeLimit(amount);
-      await sendLog(interaction.client, "info", { action: "자동충전 기본 한도 변경", 한도: amount.toLocaleString(), admin: interaction.user.tag });
-      await interaction.reply({ content: `✅ 자동 충전 **기본** 1회 한도가 **${amount.toLocaleString()}원**으로 변경되었습니다.`, ephemeral: true });
-    } else {
-      // 특정 유저 개별 한도 변경
-      if (amount === null) {
-        // 금액 생략 시 개별 한도 초기화
-        resetAutoChargeLimitFor(target.id);
-        await sendLog(interaction.client, "info", { action: "유저 자동충전 한도 초기화", 유저: `<@${target.id}>`, admin: interaction.user.tag });
-        await interaction.reply({ content: `✅ <@${target.id}> 님의 자동 충전 한도가 기본값으로 초기화되었습니다.`, ephemeral: true });
-      } else {
-        if (amount < 0) { await interaction.reply({ content: "❌ 올바른 금액을 입력해주세요.", ephemeral: true }); return; }
-        setAutoChargeLimitFor(target.id, amount);
-        await sendLog(interaction.client, "info", { action: "유저 자동충전 한도 변경", 유저: `<@${target.id}>`, 한도: amount.toLocaleString(), admin: interaction.user.tag });
-        await interaction.reply({ content: `✅ <@${target.id}> 님의 자동 충전 1회 한도가 **${amount.toLocaleString()}원**으로 설정되었습니다.`, ephemeral: true });
-      }
-    }
-    return;
-  }
+  return container;
 }
 
 /* ============================================================
-   버튼
+   점검 / 인증
 ============================================================ */
-async function handleButton(interaction) {
-  const id = interaction.customId;
 
-  if (id.startsWith("telecom_"))     return handleTelecomButton(interaction);
-  if (id.startsWith("start_input_")) return handleStartInputButton(interaction);
-  if (id.startsWith("code_input_"))  return handleCodeInputButton(interaction);
+export function uiMaintenance() {
+  return new ContainerBuilder()
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:Barrier:1523156080132231369> 긴급 점검 중"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      "현재 서비스 점검 중입니다.\n빠른 시간 내에 복구하겠습니다.\n\n-# 이용에 불편을 드려 죄송합니다."
+    ));
+}
 
-  if (id === "user_info_open") {
-    const spent = getTotalSpent(interaction.user.id);
-    await interaction.reply({
-      components: [uiMyInfo({
-        user: interaction.user, grade: getGrade(spent), points: getPoints(interaction.user.id),
-        spent, dailySpent: getDailySpent(interaction.user.id), dailyLimit: getDailyLimitFor(interaction.user.id),
-        history: getSendHistory(interaction.user.id, 10),
-      })],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-    });
-    return;
-  }
+export function uiMaintenanceToggle(isOn) {
+  return new ContainerBuilder()
+    .setAccentColor(isOn ? 0xFF4500 : 0x57F287)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      isOn ? "## 🔧 긴급 점검 ON" : "## ✅ 점검 해제"
+    ))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      isOn
+        ? "긴급 점검 모드가 활성화되었습니다.\n모든 유저의 버튼/메뉴가 차단됩니다."
+        : "점검이 해제되었습니다.\n서비스가 정상 운영됩니다."
+    ));
+}
 
-  if (id === "grade_info_open") {
-    await interaction.reply({ components: [uiGradeInfo()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-
-  // 💡 자동 충전 버튼 모달 연결 (DB에서 입금자명 확인 후 금액만 입력받음)
-  if (id === "charge_open") {
-    const userInfo = getVerifiedInfo(interaction.user.id);
-    if (!userInfo || !userInfo.realName) {
-      await interaction.reply({ content: "❌ 실명 인증 정보가 없습니다. 먼저 인증을 진행해주세요.", ephemeral: true });
-      return;
-    }
-    const realName = userInfo.realName;
-
-    await interaction.showModal(
-      new ModalBuilder().setCustomId("auto_charge_modal").setTitle("충전신청")
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId("charge_amount").setLabel("충전 금액 (원)")
-              .setStyle(TextInputStyle.Short).setPlaceholder("예: 10000").setRequired(true)
-          )
-        )
-    );
-    return;
-  }
-
-  if (id === "send_open_select") {
-    await interaction.reply({ components: [uiCoinSelect()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-  if (id === "calc_open") {
-    await interaction.reply({ components: [uiCalcCoinSelect()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
-    return;
-  }
-  if (id === "send_confirm_no") {
-    pendingTransfers.delete(interaction.user.id);
-    await interaction.update({ content: "❌ 송금이 취소되었습니다.", components: [], flags: MessageFlags.IsComponentsV2 });
-    return;
-  }
-
-  if (id === "send_confirm_yes") {
-    if (activeSending.has(interaction.user.id)) { await interaction.reply({ content: "⏳ 이미 송금이 진행 중입니다.", ephemeral: true }); return; }
-    await interaction.deferUpdate();
-    const pending = pendingTransfers.get(interaction.user.id);
-    if (!pending) { await interaction.editReply({ content: "❌ 송금 정보가 만료되었습니다.", components: [] }); return; }
-    pendingTransfers.delete(interaction.user.id);
-    const { coin, address, coinAmount, krw, actualKrw, feeKrw, userTag } = pending;
-
-    if (!deductPoints(interaction.user.id, krw)) { await interaction.editReply({ components: [uiInsufficientPoints(krw, getPoints(interaction.user.id))], flags: MessageFlags.IsComponentsV2 }); return; }
-    activeSending.add(interaction.user.id);
-
-    let result;
-    try {
-      result = await processSwapTransfer("BNB", coin, actualKrw, address);
-    } catch (err) {
-      addPoints(interaction.user.id, krw);
-      await interaction.editReply({ components: [uiSendFail(err.message)], flags: MessageFlags.IsComponentsV2 });
-      await sendLog(interaction.client, "fail", { user: userTag, coin, address, amount: coinAmount.toFixed(6), krw, error: err.message });
-      activeSending.delete(interaction.user.id);
-      return;
-    }
-
-    const actualCoinAmount = Number(result.receivedQty ?? coinAmount ?? 0);
-
-        try {
-      // ★ 수정된 부분: 누락되었던 feeKrw, actualKrw, hash 등을 모두 전달합니다.
-      await interaction.editReply({
-        components: [
-          uiSendComplete({
-            coin,
-            coinAmount: actualCoinAmount,
-            krw: Number(krw ?? 0),
-            feeKrw,       // 추가됨
-            actualKrw,    // 추가됨
-            address,
-            hash: result?.hash, // 추가됨
-            result: result ?? {}
-          })
-        ],
-        flags: MessageFlags.IsComponentsV2
-      });
-
-      await sendLog(interaction.client, "success", {
-        user: userTag,
-        coin,
-        address,
-        amount: actualCoinAmount.toFixed(6),
-        krw: Number(krw ?? 0),
-        feeKrw,       // 추가됨
-        actualKrw,    // 추가됨
-        hash: result?.hash,
-        explorer: result?.explorer
-      });
-
-      await recordSend(interaction.user.id, {
-        coin,
-        amount: actualCoinAmount,
-        krw: Number(krw ?? 0),
-        feeKrw,       // 추가됨
-        actualKrw,    // 추가됨
-        address,
-        hash: result?.hash
-      });
-
-      await sendPublicPurchaseLog(interaction.client, {
-        userId: interaction.user.id,
-        coin,
-        coinAmount: actualCoinAmount,
-        krw: Number(krw ?? 0),
-        feeKrw,       // 추가됨
-        actualKrw     // 추가됨
-      });
-
-      if (interaction.guild) {
-        const newGrade = await assignGradeRole(
-          interaction.guild,
-          interaction.user.id
-        );
-
-        if (newGrade) {
-          try {
-            await interaction.user.send({
-              components: [uiGradeUp(newGrade)],
-              flags: MessageFlags.IsComponentsV2
-            });
-          } catch {}
-        }
-      }
-
-      await updateStockMessage();
-
-    } catch (postErr) {
-      console.error("송금 후속 처리 중 오류:", postErr.message);
-
-      await sendLog(interaction.client, "fail", {
-        user: userTag,
-        coin,
-        address,
-        action: "송금 후속 처리 오류 (실제 송금은 성공함)",
-        hash: result?.hash ?? "알 수 없음",
-        error: postErr.message
-      }).catch(() => {});
-    } finally {
-      activeSending.delete(interaction.user.id);
-    }
-  }
+export function uiVerify() {
+  return new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 본인인증"))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      "**서비스 이용을 위해 본인인증이 필요합니다.**\n아래에서 통신사를 선택하세요."
+    ))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("telecom_SKT").setLabel("SKT").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("telecom_KT").setLabel("KT").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("telecom_LG").setLabel("LG U+").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("telecom_MVNO").setLabel("알뜰폰").setStyle(ButtonStyle.Primary).setDisabled(true),
+    ));
 }
 
 /* ============================================================
-   셀렉트 메뉴
+   송금 플로우
 ============================================================ */
-async function handleSelect(interaction) {
-  // 송금 내역 조회
-  if (interaction.customId === "history_select") {
-    const row = db
-      .prepare("SELECT * FROM send_history WHERE id = ?")
-      .get(parseInt(interaction.values[0]));
 
-    if (!row) {
-      await interaction.reply({
-        content: "❌ 내역을 찾을 수 없습니다.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    await interaction.reply({
-      components: [uiHistoryDetail(row)],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  // 송금 - 코인 선택
-  if (interaction.customId === "send_select_coin") {
-    await interaction.update({
-      components: [uiNetworkSelect(interaction.values[0])],
-      flags: MessageFlags.IsComponentsV2,
-    });
-    return;
-  }
-
-  // 송금 - 네트워크 선택 → 모달 열기
-  if (interaction.customId.startsWith("send_select_network_")) {
-    const coin = interaction.values[0];
-
-    const placeholder =
-      coin === "TRX"
-        ? "T로 시작하는 주소"
-        : coin === "LTC"
-        ? "L 또는 M으로 시작하는 주소"
-        : coin === "SOL"
-        ? "SOL 지갑 주소"
-        : "0x...";
-
-    await interaction.showModal(
-      new ModalBuilder()
-        .setCustomId(`send_modal_${coin}`)
-        .setTitle(`${coin} 송금`)
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId("send_address")
-              .setLabel("받는 주소")
-              .setStyle(TextInputStyle.Short)
-              .setPlaceholder(placeholder)
-              .setRequired(true)
-          ),
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId("send_amount_krw")
-              .setLabel("송금 금액 (원화 KRW)")
-              .setStyle(TextInputStyle.Short)
-              .setPlaceholder("예: 5000")
-              .setRequired(true)
-          )
-        )
-    );
-
-    return;
-  }
-
-  // 계산기
-  if (interaction.customId === "calc_select_coin") {
-    const coin = interaction.values[0];
-
-    await interaction.showModal(
-      new ModalBuilder()
-        .setCustomId(`calc_modal_${coin}`)
-        .setTitle(`${coin} 송금 계산기`)
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId("calc_krw")
-              .setLabel("계산할 금액 (원화 KRW)")
-              .setStyle(TextInputStyle.Short)
-              .setPlaceholder("예: 100000")
-              .setRequired(true)
-          )
-        )
-    );
-
-    return;
-  }
-}
-
-/* ============================================================
-   모달 (자동 충전 로직 포함)
-============================================================ */
-async function handleModal(interaction) {
-  if (interaction.customId.startsWith("info_modal_")) return handleInfoModal(interaction);
-  if (interaction.customId.startsWith("code_modal_")) return handleCodeModal(interaction);
-
-  // 💡 자동 충전 신청 모달 제출 (입금자명 DB 연동)
-  if (interaction.customId === "auto_charge_modal") {
-    const userInfo = getVerifiedInfo(interaction.user.id);
-    if (!userInfo || !userInfo.realName) {
-      await interaction.reply({ content: "❌ 실명 인증 정보를 찾을 수 없습니다.", ephemeral: true });
-      return;
-    }
-    const senderName = userInfo.realName;
-
-    const rawAmount = interaction.fields.getTextInputValue("charge_amount");
-    const amount = parseInt(rawAmount.replace(/[^0-9]/g, ""), 10);
-
-    if (isNaN(amount) || amount <= 0) { await interaction.reply({ content: "❌ 유효하지 않은 금액입니다.", ephemeral: true }); return; }
-    const limit = getAutoChargeLimitFor(interaction.user.id);
-    // 💡 1인 1신청 중복 체크
-    const isAlreadyPending = Array.from(pendingAutoCharges.values()).some(x => x.userId === interaction.user.id && x.status === 'waiting');
-    if (isAlreadyPending) {
-      await interaction.reply({ 
-        components: [uiAlreadyPendingCharge()], 
-        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral 
-      });
-      return;
-    }
-
-    if (amount > limit) {
-      await interaction.reply({ 
-        components: [uiChargeLimitExceeded(limit)], 
-        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral 
-      });
-      return;
-    }
-
-    const id = `${interaction.user.id}_${Date.now()}`;
-    const waitingContainer = buildWaitingContainer(senderName, amount);
-
-    await interaction.reply({
-        components: [waitingContainer],
-        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral
-    });
-
-    const timeoutId = setTimeout(() => {
-        if (pendingAutoCharges.has(id) && pendingAutoCharges.get(id).status === 'waiting') {
-            pendingAutoCharges.delete(id);
-        }
-    }, 14 * 60 * 1000); // 14분 대기시간
-
-    pendingAutoCharges.set(id, {
-        id,
-        userId: interaction.user.id,
-        amount,
-        senderName,
-        status: 'waiting',
-        interaction,
-        timeoutId
-    });
-    
-    // 디스코드 로그채널 기록
-    await sendLog(interaction.client, "info", {
-      action: "자동 충전 대기",
-      유저: `<@${interaction.user.id}>`,
-      입금자명: senderName,
-      금액: `${amount.toLocaleString()}원`
-    });
-    return;
-  }
-
-  // 나머지 모달들 (송금, 계산기 등 기존 동일)
-  if (interaction.customId.startsWith("send_modal_")) {
-  await interaction.deferReply({ ephemeral: true });
-
-  const coin = interaction.customId.replace("send_modal_", "");
-  const address = interaction.fields.getTextInputValue("send_address").trim();
-  const krw = parseFloat(
-    interaction.fields.getTextInputValue("send_amount_krw").replace(/,/g, "")
-  );
-  const userTag = `${interaction.user.tag} (${interaction.user.id})`;
-
-  if (isNaN(krw) || krw <= 0) {
-    await interaction.editReply({ content: "❌ 유효하지 않은 금액입니다." });
-    return;
-  }
-
-  if ((coin === "BNB" || coin === "USDTBSC") && !ethers.isAddress(address)) {
-    await interaction.editReply({ content: "❌ 유효하지 않은 BSC 주소입니다." });
-    return;
-  }
-
-  if (coin === "SOL") {
-    try {
-      new (await import("@solana/web3.js")).PublicKey(address);
-    } catch {
-      await interaction.editReply({ content: "❌ 유효하지 않은 SOL 주소입니다." });
-      return;
-    }
-  }
-
-  const balance = getPoints(interaction.user.id);
-
-  if (balance < krw) {
-    await interaction.editReply({
-      components: [uiInsufficientPoints(krw, balance)],
-      flags: MessageFlags.IsComponentsV2,
-    });
-    return;
-  }
-
-  const dailySpent = getDailySpent(interaction.user.id);
-
-  if (!checkDailyLimit(interaction.user.id, krw)) {
-    await interaction.editReply({
-      components: [
-        uiDailyLimitExceeded(
-          getDailyLimitFor(interaction.user.id),
-          dailySpent,
-          krw
+export function uiCoinSelect() {
+  return new ContainerBuilder()
+    .setAccentColor(16184307)
+    .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+            "### 구매하실 코인을 선택해주세요\n-# 아래 **드롭다운**에서 구매하실 **코인**을 **선택해주세요**"
         ),
-      ],
-      flags: MessageFlags.IsComponentsV2,
-    });
-    return;
-  }
+    )
+    .addSeparatorComponents(
+        new SeparatorBuilder()
+            .setSpacing(SeparatorSpacingSize.Small)
+            .setDivider(true),
+    )
+    .addActionRowComponents(
+        new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId("send_select_coin")
+                .setPlaceholder("코인을 선택하세요")
+                .addOptions(
+                    {
+                        label: "Binancecoin",
+                        description: "BNB",
+                        value: "BNB",
+                        emoji: "<:BNB:1485581565873487954>",
+                    },
+                    {
+                        label: "TetherUSD",
+                        description: "USDT",
+                        value: "USDT",
+                        emoji: "<:USDT:1485581569245581344>",
+                    },
+                    {
+                        label: "Litecoin",
+                        description: "LTC",
+                        value: "LTC",
+                        emoji: "<:Litecoin1:1485581687453646890>",
+                    },
+                    {
+                        label: "TRON",
+                        description: "TRX",
+                        value: "TRX",
+                        emoji: "<:TRX:1485581567786090527>",
+                    },
+                    {
+                        label: "Solana",
+                        description: "SOL",
+                        value: "SOL",
+                        emoji: "<:sol:1498294613939851415>",
+                    },
+                ),
+        ),
+    )
+    .addSeparatorComponents(
+        new SeparatorBuilder()
+            .setSpacing(SeparatorSpacingSize.Small)
+            .setDivider(true),
+    )
+    .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent("-# **BITONE 코인송금**"),
+    );
+}
 
-  let rates, coinAmount, feeRate, actualKrw;
-
-  try {
-    rates = await getRates([coin]);
-
-    const kimpRate = Math.max(0, (rates.btcKimp ?? 0) / 100);
-    feeRate = kimpRate + 0.07;
-
-    actualKrw = Math.floor(krw / (1 + feeRate));
-    coinAmount = actualKrw / rates[coin];
-  } catch {
-    await interaction.editReply({
-      content: "❌ 환율 조회 실패. 잠시 후 다시 시도해주세요.",
-    });
-    return;
-  }
-
-  if (!coinAmount || !isFinite(coinAmount) || isNaN(coinAmount)) {
-    await interaction.editReply({
-      content: `❌ ${coin} 시세 조회에 실패했습니다. 잠시 후 다시 시도해주세요.`,
-    });
-    return;
-  }
-
-  const feeKrw = krw - actualKrw;
-  const feePercent = (feeRate * 100).toFixed(2);
-
-  const network = CHAIN_MAP[coin] ?? coin;
-  const totalNeeded = krw;
-
-  pendingTransfers.set(interaction.user.id, {
-    coin,
-    address,
-    coinAmount,
-    krw,
-    actualKrw,
-    feeKrw,
-    userTag,
-  });
-
-  await interaction.editReply({
-    components: [
-      uiSendConfirm({
-        coin,
-        network,
-        address,
-        krw,
-        coinAmount,
-        feeKrw,
-        totalNeeded,
-        feePercent,
-      }),
+export function uiNetworkSelect(coin) {
+  const NETWORKS = {
+    BNB: [
+      { label: "BNB Smart Chain (BSC)", value: "BNB", emoji: "<:BNB:1490243194846449754>" },
     ],
-    flags: MessageFlags.IsComponentsV2,
-  });
-}
+    USDT: [
+      { label: "BNB Smart Chain (BSC)", value: "USDT", emoji: "<:BNB:1490243194846449754>" },
+    ],
+    TRX: [
+      { label: "TRON (TRX)", value: "TRX", emoji: "<:TRX:1485581567786090527>" },
+    ],
+    LTC: [
+      { label: "Litecoin (LTC)", value: "LTC", emoji: "<:Litecoin1:1485581687453646890>" },
+    ],
+    SOL: [
+      { label: "Solana (SOL)", value: "SOL", emoji: "<:sol:1498294613939851415>" },
+    ],
+  };
 
-  if (interaction.customId.startsWith("calc_modal_")) {
-    await interaction.deferReply({ ephemeral: true });
-    const coin = interaction.customId.replace("calc_modal_", "");
-    const krw  = parseFloat(interaction.fields.getTextInputValue("calc_krw").replace(/,/g, ""));
-    if (isNaN(krw) || krw <= 0) { await interaction.editReply({ content: "❌ 유효하지 않은 금액입니다." }); return; }
+  const networkOptions = NETWORKS[coin];
 
-    let feeRate = 0.055;
-    try {
-      const rates = await getRates();
-      const kimpRate = Math.max(0, (rates.btcKimp ?? 0) / 100);
-      feeRate = kimpRate + 0.055;
-    } catch (e) { }
-
-    const feeKrw = Math.round(krw * feeRate);
-    const receivedKrw = krw - feeKrw;
-    const totalNeeded = Math.ceil(krw / (1 - feeRate));
-    const extraNeeded = totalNeeded - krw;
-    const feePercent = (feeRate * 100).toFixed(2);
-
-    let coinPrice = 0, coinAmount = 0;
-    try {
-      coinPrice = await getCalcCoinKrwPrice(coin);
-      coinAmount = coinPrice > 0 ? receivedKrw / coinPrice : 0;
-    } catch (e) {}
-
-    await interaction.editReply({ components: [uiCalcResult({ coin, krw, feeKrw, feePercent, receivedKrw, coinPrice, coinAmount, totalNeeded, extraNeeded })], flags: MessageFlags.IsComponentsV2 });
-    return;
+  if (!networkOptions) {
+    return new ContainerBuilder()
+      .setAccentColor(0xffffff)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+          `## <a:ExclamationMark:1523117077261455501> 지원하지 않는 코인입니다.\n\`${coin}\``
+        )
+      );
   }
+
+  return new ContainerBuilder()
+    .setAccentColor(15987185)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        "### 구매하실 네트워크를 선택해주세요\n-# 아래 **드롭다운**에서 구매하실 **네트워크**를 **선택해주세요**"
+      )
+    )
+    .addSeparatorComponents(
+      new SeparatorBuilder()
+        .setSpacing(SeparatorSpacingSize.Small)
+        .setDivider(true)
+    )
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`send_select_network_${coin}`)
+          .setPlaceholder("구매하실 네트워크를 선택해주세요")
+          .addOptions(networkOptions)
+      )
+    )
+    .addSeparatorComponents(
+      new SeparatorBuilder()
+        .setSpacing(SeparatorSpacingSize.Small)
+        .setDivider(true)
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("-# **BITONE 코인송금**")
+    );
 }
 
-/* ============================================================
-   자동 충전 관련 컨테이너 UI 빌더
-============================================================ */
-function buildWaitingContainer(senderName, amount) {
-  const now = new Date();
-  const timeStr = `${now.getHours()}시${now.getMinutes()}분`;
+export function uiInsufficientPoints(needed, current) {
   return new ContainerBuilder()
-    .setAccentColor(16118000)
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:ExclamationMark:1523117077261455501> 잔액 부족"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `잔액이 부족합니다.\n**필요 금액:** ${needed.toLocaleString()}원\n**현재 잔액:** ${current.toLocaleString()}원`
+    ));
+}
+
+export function uiDailyLimitExceeded(limit, spent, krw) {
+  return new ContainerBuilder()
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## <a:ExclamationMark:1523117077261455501> 일일 한도 초과"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `일일 송금 한도를 초과합니다.\n**일일 한도:** ${limit.toLocaleString()}원\n**오늘 송금:** ${spent.toLocaleString()}원\n**요청 금액:** ${krw.toLocaleString()}원`
+    ));
+}
+
+export function uiSendConfirm({ coin, network, address, krw, coinAmount, feeKrw, totalNeeded, feePercent }) {
+  return new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 송금 확인"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**코인:** ${coin} (${network})\n` +
+      `**주소:** \`${address}\`\n` +
+      `**송금액:** ${krw.toLocaleString()}원 (약 ${coinAmount.toFixed(6)} ${coin})\n` +
+      `**수수료:** ${feeKrw.toLocaleString()}원 (${feePercent}%)\n` +
+      `**총 차감:** ${totalNeeded.toLocaleString()}원`
+    ))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("-# 주소를 다시 한번 확인해주세요. 송금 후에는 취소가 불가능합니다."))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("send_confirm_yes").setLabel("송금하기").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("send_confirm_no").setLabel("취소").setStyle(ButtonStyle.Danger),
+    ));
+}
+
+/**
+ * 🔧 [수정] MEXC 출금 ID를 마치 블록체인 TXID인 것처럼 링크 버튼으로 보여주던 걸 제거함.
+ * 출금 신청 직후 시점엔 아직 실제 온체인 트랜잭션이 완료된 게 아니라서 "TXID 확인" 버튼이
+ * 혼란을 줬음. 진짜 TXID는 출금이 실제로 완료된 뒤 상세 송금 내역(uiHistoryDetail)에서만 보여줌.
+ */
+export function uiSendComplete({ coin, coinAmount, address, hash, krw, feeKrw, actualKrw, result }) {
+  return new ContainerBuilder()
+    .setAccentColor(3066993)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 송금 완료"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**송금액:** ${krw.toLocaleString()}원 (${coinAmount.toFixed(6)} ${coin})\n` +
+      `**실제 송금액:** ${actualKrw.toLocaleString()}원\n` +
+      `**수수료:** ${feeKrw.toLocaleString()}원\n` +
+      `**주소:** \`${address}\`\n\n` +
+      `-# 출금이 완료되면 이 메시지가 실제 트랜잭션 정보로 업데이트됩니다.`
+    ));
+}
+
+
+export function uiSendFail(reason) {
+  return new ContainerBuilder()
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ❌ 송금 실패"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**사유:** ${reason}`));
+}
+
+export function uiMyInfo({ user, grade, points, spent, dailySpent, dailyLimit, history }) {
+  return new ContainerBuilder()
+    .setAccentColor(16184050)
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent("## <a:Orange_Loading:1524384379806154933> 충전 신청"),
+        new TextDisplayBuilder().setContent(`### ${user.username}님의 정보`),
+    )
+    .addSeparatorComponents(
+        new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
+    )
+    .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(`**잔액 : \`${points.toLocaleString()}원\`**\n**누적 송금 : \`${spent.toLocaleString()}원\`**\n**일일 한도 : \`${dailySpent.toLocaleString()}원/${dailyLimit.toLocaleString()}원\`**\n**내 등급 : *${grade.name}***`),
+    )
+    .addSeparatorComponents(
+        new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
+    )
+    .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent("**코인 송금 내역**"),
+    )
+    .addActionRowComponents(
+        new ActionRowBuilder()
+            .addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId("history_select")
+                    .setPlaceholder("송금 내역을 선택 해주세요")
+                    .addOptions(
+                      history.length > 0 
+                        ? history.map(h => ({
+                            label: `${new Date(h.created_at).toLocaleDateString()} - ${h.coin}`,
+                            description: `${h.krw.toLocaleString()}원 송금`,
+                            value: String(h.id)
+                          }))
+                        : [{ label: "내역 없음", value: "none", disabled: true }]
+                    ),
+            ),
+    )
+    .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent("-# **Txid와 송금내역을 확인 할수있습니다.**"),
+    );
+}
+
+export function uiHistoryDetail(h) {
+  const chain = CHAIN_MAP[h.coin] || "BSC";
+  const explorerBase = {
+    BSC: "https://bscscan.com/tx/",
+    TRX: "https://tronscan.org/#/transaction/",
+    LTC: "https://blockchair.com/litecoin/transaction/",
+    SOL: "https://solscan.io/tx/",
+  };
+
+  const container = new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 📜 상세 내역"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**일시:** ${new Date(h.created_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}\n` +
+      `**코인:** ${h.coin}\n` +
+      `**금액:** ${h.amount} ${h.coin} (${h.krw.toLocaleString()}원)\n` +
+      `**주소:** \`${h.address}\`\n` +
+      `**상태:** ${h.hash ? "완료" : "출금 처리중"}\n` +
+      (h.hash ? `**TXID:** \`${h.hash}\`` : "-# 아직 실제 트랜잭션이 완료되지 않았습니다.")
+    ));
+
+  // 🔧 실제 온체인 TXID가 있을 때만 링크 버튼 표시 (MEXC 출금ID인 동안엔 버튼 숨김)
+  if (h.hash && h.tx_confirmed) {
+    const url = (explorerBase[chain] || explorerBase.BSC) + h.hash;
+    container.addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setLabel("트랜잭션 확인").setStyle(ButtonStyle.Link).setURL(url)
+    ));
+  }
+
+  return container;
+}
+
+export function uiGradeUp(grade) {
+  return new ContainerBuilder()
+    .setAccentColor(16766720)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🎉 등급 상승: ${grade.name}`))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `축하합니다! 누적 송금액이 기준을 달성하여 **${grade.name}** 등급으로 승급되었습니다.\n` +
+      (grade.lounge ? "이제 **전용 라운지** 채널을 이용하실 수 있습니다!" : "")
+    ));
+}
+
+export function uiAdminInfo(row, grade, points, spent) {
+  return new ContainerBuilder()
+    .setAccentColor(16184050)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`### <@${row.discord_id}>님의 정보 (관리자)`),
     )
     .addSeparatorComponents(
       new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
     )
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`**충전 계좌** \n> **\`하나은행 79191114733007\`**`),
-    )
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`**충전 금액**\n> **\`${amount.toLocaleString()}원\`**`),
-    )
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`**신청 시각 : \`${timeStr}\`**`),
-    )
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`-# **입금자명**과 **충전금액**이 **일치**하여야 합니다.`),
-    );
-}
-
-function buildDoneContainer(senderName, amount, balance) {
-  const now = new Date();
-  const timeStr = `${now.getHours()}시${now.getMinutes()}분`;
-  return new ContainerBuilder()
-    .setAccentColor(2403676)
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent("## <a:loading:1523137796389470470> 충전 완료"),
+      new TextDisplayBuilder().setContent(
+        `**실명 : \`${row.realName || row.real_name}\`**\n` +
+        `**잔액 : \`${points.toLocaleString()}원\`**\n` +
+        `**누적 송금 : \`${spent.toLocaleString()}원\`**\n` +
+        `**내 등급 : *${grade?.name ?? "일반"}***`
+      ),
     )
     .addSeparatorComponents(
       new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
     )
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`**충전 금액 : \`${amount.toLocaleString()}원\`**\n**현재 잔액 : \`${balance.toLocaleString()}원\`**`),
-    )
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`**처리 시각 : \`${timeStr}\`**`),
+      new TextDisplayBuilder().setContent(
+        `**생년월일 : \`${row.birthday}\`**\n` +
+        `**전화번호 : \`${row.phone}\`**\n` +
+        `**통신사 : \`${row.telecom}\`**\n` +
+        `**인증일시 : \`${new Date(row.verified_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}\`**`
+      ),
     );
 }
 
-/* ============================================================
-   Pushbullet 자동결제 웹소켓 스트림 연동
-============================================================ */
-export function startPushbulletStream(client) {
-  if (!PUSHBULLET_TOKEN) {
-      console.warn("⚠️ PUSHBULLET_TOKEN이 설정되지 않아 자동 충전 시스템을 시작할 수 없습니다.");
-      return;
-  }
+export function uiStockInfo(b) {
+  const fmt = (krw) => `₩${Math.round(krw).toLocaleString()}`;
+  const now  = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
 
-  const ws = new WebSocket(`wss://stream.pushbullet.com/websocket/${PUSHBULLET_TOKEN}`);
-  
-  ws.on('open', () => {
-      console.log(`[WS] 자동 충전 시스템 (Pushbullet) 스트림 연결 완료!`);
-  });
-
-  ws.on('message', (raw) => {
-      let data;
-      try { data = JSON.parse(raw.toString()); } catch { return; }
-      if (data.type === 'nop' || data.type !== 'push') return; 
-
-      const push = data.push || {};
-      if (push.type !== 'mirror') return; 
-      handleMirrorPush(push, client);
-  });
-
-  ws.on('close', (code, reason) => {
-      console.log(`[WS] Pushbullet 연결 끊김. 5초 후 재시도...`);
-      setTimeout(() => startPushbulletStream(client), 5000);
-  });
-
-  ws.on('error', (err) => {
-      console.error(`[WS ERROR] Pushbullet 오류:`, err.message);
-  });
+  return new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 💰 실시간 지갑 재고"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**총 합계:** ${fmt(b.totalKrw)}\n\n` +
+      `**BNB:** ${b.BNB.amount.toFixed(4)} (${fmt(b.BNB.krw)})\n` +
+      `**USDT:** ${b.USDTBSC.amount.toFixed(2)} (${fmt(b.USDTBSC.krw)})\n` +
+      `**TRX:** ${b.TRX.amount.toFixed(2)} (${fmt(b.TRX.krw)})\n` +
+      `**LTC:** ${b.LTC.amount.toFixed(4)} (${fmt(b.LTC.krw)})\n` +
+      `**SOL:** ${b.SOL.amount.toFixed(4)} (${fmt(b.SOL.krw)})\n\n` +
+      `-# 기준 시각: ${now}`
+    ));
 }
 
-async function handleMirrorPush(push, client) {
-  const title = push.title || "";
-  const body = push.body || "";
+export function uiCalcCoinSelect() {
+  return new ContainerBuilder()
+    .setAccentColor(0xFFFFFF)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 계산기 - 코인 선택"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("**시세를 계산할 코인을 선택해주세요.**"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder().setCustomId("calc_select_coin").setPlaceholder("코인을 선택하세요")
+        .addOptions(
+          { label: "Binancecoin",  description: "BNB",        value: "BNB",     emoji: "<:BNB:1485581565873487954>" },
+          { label: "TetherUSD",    description: "USDT",       value: "USDT",    emoji: "<:USDT:1485581569245581344>" },
+          { label: "Litecoin",     description: "LTC",        value: "LTC",     emoji: "<:Litecoin1:1485581687453646890>" },
+          { label: "TRON",         description: "TRX",        value: "TRX",     emoji: "<:TRX:1485581567786090527>" },
+          { label: "Solana",       description: "SOL",        value: "SOL",     emoji: "<:sol:1498294613939851415>" },
+        )
+    ));
+}
 
-  // '입금' 키워드가 없으면 무시
-  if (!title.includes('입금') && !body.includes('입금')) return;
+export function uiCalcResult({ coin, krw, feeKrw, feePercent, receivedKrw, coinPrice, coinAmount, totalNeeded, extraNeeded }) {
+  return new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### 📊 ${coin} 송금 계산 결과`))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**입력 금액:** ${krw.toLocaleString()}원\n` +
+      `**수수료:** ${feeKrw.toLocaleString()}원 (${feePercent}%)\n` +
+      `**실제 송금액:** ${receivedKrw.toLocaleString()}원\n` +
+      `**코인 시세:** 1 ${coin} = ${Math.round(coinPrice).toLocaleString()}원\n` +
+      `**송금 수량:** **${coinAmount.toFixed(6)} ${coin}**\n\n` +
+      `**[팁]** ${krw.toLocaleString()}원을 딱 맞춰 보내려면 **${totalNeeded.toLocaleString()}원**을 충전해야 합니다. (추가 필요: ${extraNeeded.toLocaleString()}원)`
+    ));
+}
 
-  // 타이틀과 바디가 어떻게 분리되어 들어올지 모르므로 전체 텍스트로 병합하여 검사
-  const fullText = `${title} ${body}`;
+export function uiBalanceAdjustedDM(amount, newBalance) {
+  return new ContainerBuilder()
+    .setAccentColor(amount >= 0 ? 0x57F287 : 0xED4245)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(amount >= 0 ? "## 💰 포인트 충전 완료" : "## 💸 포인트 차감 안내"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `관리자에 의해 포인트가 조정되었습니다.\n` +
+      `**조정 금액:** ${amount >= 0 ? "+" : ""}${amount.toLocaleString()}원\n` +
+      `**현재 잔액:** ${newBalance.toLocaleString()}원`
+    ));
+}
 
-  // 금액 추출: "10,000원" 포맷에서 금액 캡처
-  const matchedAmount = fullText.match(/([\d,]+)원/)?.[1];
-  if (!matchedAmount) return;
-  const pushAmount = Number(matchedAmount.replace(/,/g, ""));
-  
-  // 입금자명 추출 (하나은행 1Q 포맷 반영)
-  // 알림 예시: "입금 10,000원 노무현 잔액 3..."
-  // "원 " 이후에 오는 첫 번째 공백 없는 단어를 입금자명으로 캡처
-  const senderMatch = fullText.match(/원\s+([^\s]+)/);
-  if (!senderMatch) return; // 입금자명을 찾을 수 없으면 종료
-  const pushSender = senderMatch[1]; 
+export function uiChargeCreated(ticketChannel) {
+  return new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 충전 티켓 생성 완료"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `${ticketChannel} 채널이 생성되었습니다.\n잠시만 기다려주세요.`
+    ));
+}
 
-  const dbList = Array.from(pendingAutoCharges.values());
-  const normalizedPushSender = normalizeSenderName(pushSender);
-  const target = dbList.find(x =>
-    x.amount === pushAmount &&
-    normalizeSenderName(x.senderName) === normalizedPushSender &&
-    x.status === "waiting"
-  );
+export function uiChargeTicket(userId, username, amount) {
+  return new ContainerBuilder()
+    .setAccentColor(0xFFFFFF)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 💳 충전 신청"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**사용자:** <@${userId}>\n**성명:** ${username}\n**충전 금액:** ${amount.toLocaleString()}원`
+    ))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`charge_approve_${userId}_${amount}`).setLabel("✅ 충전 승인").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`charge_reject_${userId}_${amount}`).setLabel("❌ 충전 거절").setStyle(ButtonStyle.Danger),
+    ));
+}
 
-  if (!target) {
-    console.warn("[AUTO_CHARGE] 입금 알림과 대기 건 매칭 실패", {
-      pushAmount,
-      pushSender,
-      normalizedPushSender,
-      waiting: dbList
-        .filter(x => x.status === "waiting")
-        .map(x => ({ amount: x.amount, senderName: x.senderName }))
-    });
-    return;
-  }
+export function uiChargeApproved(userId, amount, processorTag) {
+  return new ContainerBuilder()
+    .setAccentColor(3066993)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 충전 승인 완료"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `<@${userId}> 님의 **${amount.toLocaleString()}원** 충전이 승인되었습니다.\n-# 처리자: ${processorTag}`
+    ));
+}
 
-  // 매칭 성공 후속 로직 작성 부분...
+export function uiChargeApprovedDM(amount, currentPoints) {
+  return new ContainerBuilder()
+    .setAccentColor(3066993)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 충전 승인"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**${amount.toLocaleString()}원** 충전이 승인되었습니다!\n현재 잔액: **${currentPoints.toLocaleString()}원**`
+    ));
+}
 
+export function uiChargeRejected(userId, amount, processorTag) {
+  return new ContainerBuilder()
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ❌ 충전 거절"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `<@${userId}> 님의 **${amount.toLocaleString()}원** 충전이 거절되었습니다.\n-# 처리자: ${processorTag}`
+    ));
+}
 
-  // DB 매칭 성공 시 자동 처리 시작
-  clearTimeout(target.timeoutId);
-  target.status = "done";
+export function uiChargeRejectedDM(amount) {
+  return new ContainerBuilder()
+    .setAccentColor(15158332)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ❌ 충전 거절"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**${amount.toLocaleString()}원** 충전 신청이 거절되었습니다.\n문의사항은 관리자에게 문의해주세요.`
+    ));
+}
 
-  // 포인트 충전
-  addPoints(target.userId, target.amount);
-  const currentBalance = getPoints(target.userId);
+export function uiGradeInfo() {
+  const lines = [
+    "**",
+    "<@&1523182081906315414>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +20,000,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523181735486165022>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +15,000,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523181324184322132>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +10,000,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523180335322632202>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +8,000,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523180037791289374>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +5,000,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523179745385119784>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +4,000,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523179433958051961>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +3,000,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523179067690455141>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +2,000,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523178341492854914>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +1,000,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523177478577848350>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +500,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523176786681139230>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +100,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "<@&1523174407835484311>",
+    "<a:arrow_arrow:1523190711586001025> 누적 금액 +10,000원",
+    "<a:arrow_arrow:1523190711586001025> 매입 수수료 -5%",
+    "<a:arrow_arrow:1523190711586001025> 대행 수수료 5.5%",
+    "**",
+  ];
 
-  // 디스코드 메시지 '충전 완료'로 수정
-  const doneContainer = buildDoneContainer(target.senderName, target.amount, currentBalance);
-  target.interaction.editReply({
-      components: [doneContainer],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral
-  }).catch(() => {});
+  const footer =
+    "**<a:e_1:1523192758674788562> 현재 모든 역할등급 `수수료율`은 모두 동일합니다.\n" +
+    "<@&1523180335322632202> 등급 이상부턴 `전용라운지`가 제공됩니다.**";
 
-  // 성공 로그 발송
-  await sendLog(client, "success", {
-      action: "자동 결제 승인",
-      유저: `<@${target.userId}>`,
-      입금자: target.senderName,
-      금액: `${target.amount.toLocaleString()}원`,
-      admin: "SYSTEM (Pushbullet)"
-  });
+  return new ContainerBuilder()
+    .setAccentColor(2067276)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 🏅 등급 및 역할 안내"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(lines.join("\n")))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(footer));
+}
 
-  // 역할/등급 업그레이드 여부 확인
-  if (target.interaction.guild) {
-      const newGrade = await assignGradeRole(target.interaction.guild, target.userId);
-      if (newGrade) {
-          try { 
-              const user = await client.users.fetch(target.userId);
-              await user.send({ components: [uiGradeUp(newGrade)], flags: MessageFlags.IsComponentsV2 }); 
-          } catch {}
-      }
-  }
+/* ============================================================
+   수익통계 (수수료 수익 집계)
+============================================================ */
+export function uiProfitStatsMenu() {
+  return new ContainerBuilder()
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("## 📊 수익통계"))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("확인할 기간을 선택해주세요.\n-# 수익 = 송금 시 떼는 수수료 합계입니다."))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("profit_stats_daily").setLabel("일간").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("profit_stats_weekly").setLabel("주간").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("profit_stats_monthly").setLabel("월간").setStyle(ButtonStyle.Primary),
+    ));
+}
 
-  // 처리 끝난 데이터 메모리 삭제
-  pendingAutoCharges.delete(target.id);
+export function uiProfitStats(periodLabel, stats) {
+  const fmt = (n) => `₩${Math.round(n).toLocaleString()}`;
+  return new ContainerBuilder()
+    .setAccentColor(0x57F287)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📊 ${periodLabel} 수익통계`))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `**총 송금 건수:** ${stats.count.toLocaleString()}건\n` +
+      `**총 송금액(고객 요청 기준):** ${fmt(stats.totalKrw)}\n` +
+      `**수수료 수익 합계:** ${fmt(stats.totalFeeKrw)}\n` +
+      `**건당 평균 수익:** ${fmt(stats.count > 0 ? stats.totalFeeKrw / stats.count : 0)}`
+    ))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# 기간: ${stats.rangeLabel}`))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("profit_stats_daily").setLabel("일간").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("profit_stats_weekly").setLabel("주간").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("profit_stats_monthly").setLabel("월간").setStyle(ButtonStyle.Secondary),
+    ));
 }
