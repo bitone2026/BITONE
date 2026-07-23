@@ -926,14 +926,23 @@ async function handleMirrorPush(push, client) {
   const title = push.title || "";
   const body = push.body || "";
 
+  // '입금' 키워드가 없으면 무시
   if (!title.includes('입금') && !body.includes('입금')) return;
 
-  const matchedAmount = title.match(/([\d,]+)원/)?.[1] || body.match(/([\d,]+)원/)?.[1];
+  // 타이틀과 바디가 어떻게 분리되어 들어올지 모르므로 전체 텍스트로 병합하여 검사
+  const fullText = `${title} ${body}`;
+
+  // 금액 추출: "10,000원" 포맷에서 금액 캡처
+  const matchedAmount = fullText.match(/([\d,]+)원/)?.[1];
   if (!matchedAmount) return;
   const pushAmount = Number(matchedAmount.replace(/,/g, ""));
   
-  // 앱 환경에 맞추어 커스텀할 부분 (예: 카카오뱅크, 토스 등 포맷에 따라)
-  const pushSender = body.split("→")[0].trim().split(" ")[0].trim(); // 홍길동 → 000 계좌... 
+  // 입금자명 추출 (하나은행 1Q 포맷 반영)
+  // 알림 예시: "입금 10,000원 노무현 잔액 3..."
+  // "원 " 이후에 오는 첫 번째 공백 없는 단어를 입금자명으로 캡처
+  const senderMatch = fullText.match(/원\s+([^\s]+)/);
+  if (!senderMatch) return; // 입금자명을 찾을 수 없으면 종료
+  const pushSender = senderMatch[1]; 
 
   const dbList = Array.from(pendingAutoCharges.values());
   const normalizedPushSender = normalizeSenderName(pushSender);
@@ -954,6 +963,10 @@ async function handleMirrorPush(push, client) {
     });
     return;
   }
+
+  // 매칭 성공 후속 로직 작성 부분...
+}
+
 
   // DB 매칭 성공 시 자동 처리 시작
   clearTimeout(target.timeoutId);
