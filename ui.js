@@ -59,10 +59,10 @@ export async function buildMainContainer() {
                 new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
             )
             .addTextDisplayComponents(
-                new TextDisplayBuilder().setContent("**실시간 재고**\n-# 현재 **실시간 재고**를 확인 할수있어요.\n> **<#1529274587110572183>**"),
+                new TextDisplayBuilder().setContent("**실시간 재고**\n-# 현재 **실시간 재고**를 확인 할수있어요.\n> **<#1529147114087514112>**"),
             )
             .addTextDisplayComponents(
-                new TextDisplayBuilder().setContent("**실시간 김프**\n-# 현재 **실시간 김프**를 확인 할수있어요.\n> **<#1529274698657960008>**"),
+                new TextDisplayBuilder().setContent("**실시간 김프**\n-# 현재 **실시간 김프**를 확인 할수있어요.\n> **<#1529157355898405006>**"),
             )
             .addTextDisplayComponents(
                 new TextDisplayBuilder().setContent(`-# <t:${ts}:t>에 갱신됨 (<t:${ts}:R>)`),
