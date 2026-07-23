@@ -77,19 +77,19 @@ export async function buildMainContainer() {
         new ActionRowBuilder()
             .addComponents(
                 new ButtonBuilder()
-                    .setStyle(ButtonStyle.Success)
+                    .setStyle(ButtonStyle.Primary)
                     .setLabel("충전")
                     .setCustomId("charge_open"),
                 new ButtonBuilder()
-                    .setStyle(ButtonStyle.Success)
+                    .setStyle(ButtonStyle.Primary)
                     .setLabel("송금")
                     .setCustomId("send_open_select"),
                 new ButtonBuilder()
-                    .setStyle(ButtonStyle.Secondary)
+                    .setStyle(ButtonStyle.Primary)
                     .setLabel("내 정보")
                     .setCustomId("user_info_open"),
                 new ButtonBuilder()
-                    .setStyle(ButtonStyle.Secondary)
+                    .setStyle(ButtonStyle.Primary)
                     .setLabel("계산기")
                     .setCustomId("calc_open"),
             ),
