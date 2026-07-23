@@ -66,6 +66,8 @@ db.exec(`
     coin        TEXT NOT NULL,
     amount      REAL NOT NULL,
     krw         INTEGER NOT NULL,
+    fee_krw     INTEGER NOT NULL DEFAULT 0,
+    actual_krw  INTEGER,
     address     TEXT NOT NULL,
     hash        TEXT NOT NULL,
     created_at  TEXT NOT NULL
@@ -88,6 +90,9 @@ db.exec(`
 try { db.exec(`ALTER TABLE points ADD COLUMN total_spent INTEGER NOT NULL DEFAULT 0`); } catch { /* 이미 존재 */ }
 // points 테이블 notified_grade 컬럼 (등급 달성 알림 중복 방지용)
 try { db.exec(`ALTER TABLE points ADD COLUMN notified_grade INTEGER NOT NULL DEFAULT 0`); } catch { /* 이미 존재 */ }
+// send_history 테이블 fee_krw / actual_krw 컬럼 (수익통계용)
+try { db.exec(`ALTER TABLE send_history ADD COLUMN fee_krw INTEGER NOT NULL DEFAULT 0`); } catch { /* 이미 존재 */ }
+try { db.exec(`ALTER TABLE send_history ADD COLUMN actual_krw INTEGER`); } catch { /* 이미 존재 */ }
 
 // verified_users 구버전 → AES 신버전
 try {
@@ -328,27 +333,60 @@ export function deductPoints(discordId, amount) {
    송금 내역 관련
 ============================================================ */
 
-export function recordSend(discordId, { coin, amount, krw, address, hash, createdAt }) {
+/**
+ * 🔧 [수정] feeKrw / actualKrw도 같이 저장하도록 확장 (수익통계 계산용).
+ * hash는 처음엔 MEXC 출금ID가 들어가고, 실제 완료 확인 후 진짜 TXID로 갱신됨(wallet.js에서 처리).
+ */
+export function recordSend(discordId, { coin, amount, krw, feeKrw, actualKrw, address, hash, createdAt }) {
   // 🔧 [수정] 복구(이벤트 재생) 중에는 "재생하는 지금 시각"이 아니라
   // 원래 송금했던 시각(createdAt)을 그대로 보존해야 함. 안 그러면 복구가
   // 일어날 때마다 예전 송금 기록들이 전부 "복구된 순간"의 동일한 시/분/초로
   // 다시 찍혀버리는 문제가 생김.
   const ts = createdAt || new Date().toISOString();
   db.prepare(`
-    INSERT INTO send_history (discord_id, coin, amount, krw, address, hash, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(discordId, coin, amount, krw, address, hash, ts);
+    INSERT INTO send_history (discord_id, coin, amount, krw, fee_krw, actual_krw, address, hash, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(discordId, coin, amount, krw, feeKrw ?? 0, actualKrw ?? null, address, hash, ts);
   db.prepare(`
     INSERT INTO points (discord_id, balance, total_spent) VALUES (?, 0, ?)
     ON CONFLICT(discord_id) DO UPDATE SET total_spent = total_spent + ?
   `).run(discordId, krw, krw);
-  logDbEvent("SEND_RECORD", { discordId, coin, amount, krw, address, hash, createdAt: ts });
+  logDbEvent("SEND_RECORD", { discordId, coin, amount, krw, feeKrw, actualKrw, address, hash, createdAt: ts });
 }
 
 export function getSendHistory(discordId, limit = 10) {
   return db.prepare(
     "SELECT * FROM send_history WHERE discord_id = ? ORDER BY created_at DESC LIMIT ?"
   ).all(discordId, limit);
+}
+
+/**
+ * 실제 온체인 트랜잭션이 완료된 뒤, MEXC 출금ID였던 hash를 진짜 TXID로 갱신함.
+ * (wallet.js의 출금완료 폴링 로직에서 사용 예정)
+ */
+export function updateSendTxHash(sendHistoryId, realTxHash) {
+  db.prepare("UPDATE send_history SET hash = ? WHERE id = ?").run(realTxHash, sendHistoryId);
+  logDbEvent("SEND_TX_CONFIRMED", { id: sendHistoryId, hash: realTxHash });
+}
+
+/**
+ * 수익통계: 지정한 기간(since ~ now) 동안의 수수료 수익 합계.
+ * 수익 = 송금 시 뗀 수수료(fee_krw) 합계.
+ */
+export function getProfitStats(sinceISO, untilISO) {
+  const row = db.prepare(`
+    SELECT
+      COUNT(*) as count,
+      COALESCE(SUM(krw), 0) as totalKrw,
+      COALESCE(SUM(fee_krw), 0) as totalFeeKrw
+    FROM send_history
+    WHERE created_at >= ? AND created_at < ?
+  `).get(sinceISO, untilISO);
+  return {
+    count: row?.count ?? 0,
+    totalKrw: row?.totalKrw ?? 0,
+    totalFeeKrw: row?.totalFeeKrw ?? 0,
+  };
 }
 
 /* ============================================================
