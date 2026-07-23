@@ -17,7 +17,7 @@ import { setClient } from "./dbEventLog.js";
    환경변수 및 채널 설정
 ============================================================ */
 const BALANCE_CHANNEL_ID = "1529147114087514112";
-const KIMP_CHANNEL_ID = "1529157355898405006";
+const KIMP_CHANNEL_ID = "1529794086620369038";
 
 const MEXC_API_KEY = process.env.MEXC_API_KEY;
 const MEXC_SECRET_KEY = process.env.MEXC_API_SECRET;
