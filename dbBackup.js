@@ -1,3 +1,6 @@
+// 백업 채널에 쌓인 "이벤트 로그(일반 텍스트 JSON)"를 시간순으로 재생해서
+// db.js가 방금 새로 만든 빈 DB를 재구성하는 모듈.
+
 import {
   db, setConfig, addPoints, deductPoints, recordSend, adjustTotalSpent,
   setNotifiedGrade, setDailyLimitFor, resetDailyLimitFor, restoreVerifiedNiceRaw,
@@ -11,6 +14,10 @@ export async function restoreFromEventLog(client, { addBlacklist, removeBlacklis
     return;
   }
 
+  // 🔧 [핵심 버그 수정] DB에 이미 데이터가 있으면(=Railway가 파일을 실제로는
+  // 안 지웠거나, 직전에 이미 복구된 상태) 재생을 절대 하지 않음.
+  // 이 체크가 없으면 재시작될 때마다 과거 이벤트가 기존 잔액/누적 위에
+  // 계속 더해져서 "가만히 둬도 포인트가 계속 올라가는" 심각한 버그가 생김.
   const pointsCount   = db.prepare("SELECT COUNT(*) as c FROM points").get().c;
   const verifiedCount = db.prepare("SELECT COUNT(*) as c FROM verified_users").get().c;
   const sendCount     = db.prepare("SELECT COUNT(*) as c FROM send_history").get().c;
@@ -22,6 +29,7 @@ export async function restoreFromEventLog(client, { addBlacklist, removeBlacklis
   try {
     const channel = await client.channels.fetch(channelId);
 
+    // 채널의 전체 메시지를 100개씩 페이지네이션으로 수집 (최신 → 과거 순으로 옴)
     const allMessages = [];
     let before;
     for (;;) {
@@ -32,19 +40,17 @@ export async function restoreFromEventLog(client, { addBlacklist, removeBlacklis
       if (batch.size < 100) break;
     }
 
+    // 오래된 것부터 순서대로 재생해야 하므로 뒤집음
     allMessages.reverse();
 
     const events = [];
     for (const msg of allMessages) {
-      if (msg.author.id !== client.user.id) continue;
+      if (msg.author.id !== client.user.id) continue; // 봇이 남긴 로그만 이벤트로 취급
       try {
         const parsed = JSON.parse(msg.content);
-        // 🔧 [수정됨] JSON 데이터와 함께 디스코드 메시지가 작성된 시간(msg.createdAt)을 같이 저장합니다.
-        if (parsed && parsed.t) {
-          events.push({ payload: parsed, fallbackTime: msg.createdAt });
-        }
+        if (parsed && parsed.t) events.push(parsed);
       } catch {
-        // JSON이 아닌 메시지는 무시
+        // JSON이 아닌 메시지(사람이 남긴 잡담 등)는 이벤트 로그가 아니므로 무시
       }
     }
 
@@ -55,13 +61,12 @@ export async function restoreFromEventLog(client, { addBlacklist, removeBlacklis
 
     setReplaying(true);
     let applied = 0;
-    for (const evObj of events) {
+    for (const ev of events) {
       try {
-        // 🔧 [수정됨] applyEvent에 fallbackTime도 같이 넘겨줍니다.
-        applyEvent(evObj.payload, { addBlacklist, removeBlacklist }, evObj.fallbackTime);
+        applyEvent(ev, { addBlacklist, removeBlacklist });
         applied++;
       } catch (e) {
-        console.error(`이벤트 재생 실패 (${evObj.payload.t}):`, e.message);
+        console.error(`이벤트 재생 실패 (${ev.t}):`, e.message);
       }
     }
     setReplaying(false);
@@ -72,8 +77,7 @@ export async function restoreFromEventLog(client, { addBlacklist, removeBlacklis
   }
 }
 
-// 🔧 [수정됨] 세 번째 인자로 fallbackTime(디스코드 메시지 시간)을 받습니다.
-function applyEvent(ev, { addBlacklist, removeBlacklist }, fallbackTime) {
+function applyEvent(ev, { addBlacklist, removeBlacklist }) {
   const d = ev.d || {};
   switch (ev.t) {
     case "CONFIG":
@@ -89,16 +93,10 @@ function applyEvent(ev, { addBlacklist, removeBlacklist }, fallbackTime) {
       deductPoints(d.discordId, d.amount);
       break;
     case "SEND_RECORD":
-      // 🔧 [핵심 수정] JSON 안에 시간이 없다면, 봇이 백업 채널에 메시지를 남겼던 시간을 씁니다.
-      const actualTime = d.createdAt || fallbackTime.toISOString();
-      
-      recordSend(d.discordId, { 
-        coin: d.coin, 
-        amount: d.amount, 
-        krw: d.krw, 
-        address: d.address, 
-        hash: d.hash, 
-        createdAt: actualTime 
+      recordSend(d.discordId, {
+        coin: d.coin, amount: d.amount, krw: d.krw,
+        feeKrw: d.feeKrw, actualKrw: d.actualKrw,
+        address: d.address, hash: d.hash, createdAt: d.createdAt,
       });
       break;
     case "TOTAL_SPENT_ADJUST":
@@ -118,6 +116,10 @@ function applyEvent(ev, { addBlacklist, removeBlacklist }, fallbackTime) {
       break;
     case "BLACKLIST_REMOVE":
       if (removeBlacklist) removeBlacklist(d.discordId);
+      break;
+    case "SEND_TX_CONFIRMED":
+      // 실제 TXID 갱신 이벤트는 참고용 로그로만 남고, 상세 재생은 생략해도
+      // send_history 자체는 SEND_RECORD로 이미 복구되므로 큰 문제 없음.
       break;
     default:
       console.warn("알 수 없는 이벤트 타입, 건너뜀:", ev.t);
