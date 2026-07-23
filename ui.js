@@ -157,7 +157,7 @@ export function uiPurchaseThanks({ userId, coin, coinAmount, krw }) {
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("### <a:e_1:1523192758674788562> 대행로그"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `-# **<@${userId}>님, 오늘도 저희 비트원 코인 송금 대행을 이용해 주셔서 감사합니다.**`
+      `-# **익명님, 오늘도 저희 비트원 코인 송금 대행을 이용해 주셔서 감사합니다.**`
     ))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("**이용금액**"))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**\`\`\`${krw.toLocaleString()}원\`\`\`**`));
