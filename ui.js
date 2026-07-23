@@ -290,21 +290,64 @@ export function uiVerify() {
 
 export function uiCoinSelect() {
   return new ContainerBuilder()
-    .setAccentColor(0xFFFFFF)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 코인 선택"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("**송금할 코인을 선택해주세요.**"))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
-    .addActionRowComponents(new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder().setCustomId("send_select_coin").setPlaceholder("코인을 선택하세요")
-        .addOptions(
-          { label: "Binancecoin",  description: "BNB",  value: "BNB",     emoji: "<:BNB:1485581565873487954>" },
-          { label: "TetherUSD",    description: "USDT", value: "USDT",    emoji: "<:USDT:1485581569245581344>" },
-          { label: "Litecoin",     description: "LTC",  value: "LTC",     emoji: "<:Litecoin1:1485581687453646890>" },
-          { label: "TRON",         description: "TRX",  value: "TRX",     emoji: "<:TRX:1485581567786090527>" },
-          { label: "Solana",       description: "SOL",  value: "SOL",     emoji: "<:sol:1498294613939851415>" },
-        )
-    ));
+    .setAccentColor(16184307)
+    .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+            "### 구매하실 코인을 선택해주세요\n-# 아래 **드롭다운**에서 구매하실 **코인**을 **선택해주세요**"
+        ),
+    )
+    .addSeparatorComponents(
+        new SeparatorBuilder()
+            .setSpacing(SeparatorSpacingSize.Small)
+            .setDivider(true),
+    )
+    .addActionRowComponents(
+        new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId("send_select_coin")
+                .setPlaceholder("코인을 선택하세요")
+                .addOptions(
+                    {
+                        label: "Binancecoin",
+                        description: "BNB",
+                        value: "BNB",
+                        emoji: "<:BNB:1485581565873487954>",
+                    },
+                    {
+                        label: "TetherUSD",
+                        description: "USDT",
+                        value: "USDT",
+                        emoji: "<:USDT:1485581569245581344>",
+                    },
+                    {
+                        label: "Litecoin",
+                        description: "LTC",
+                        value: "LTC",
+                        emoji: "<:Litecoin1:1485581687453646890>",
+                    },
+                    {
+                        label: "TRON",
+                        description: "TRX",
+                        value: "TRX",
+                        emoji: "<:TRX:1485581567786090527>",
+                    },
+                    {
+                        label: "Solana",
+                        description: "SOL",
+                        value: "SOL",
+                        emoji: "<:sol:1498294613939851415>",
+                    },
+                ),
+        ),
+    )
+    .addSeparatorComponents(
+        new SeparatorBuilder()
+            .setSpacing(SeparatorSpacingSize.Small)
+            .setDivider(true),
+    )
+    .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent("-# **BITONE 코인송금**"),
+    );
 }
 
 export function uiNetworkSelect(coin) {
