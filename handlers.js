@@ -855,7 +855,7 @@ function buildWaitingContainer(senderName, amount) {
       new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
     )
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`**충전 계좌** \n> **\`토스뱅크 1002-5957-5068\`**`),
+      new TextDisplayBuilder().setContent(`**충전 계좌** \n> **\`하나은행 79191114733007\`**`),
     )
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(`**충전 금액**\n> **\`${amount.toLocaleString()}원\`**`),
