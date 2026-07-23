@@ -254,7 +254,7 @@ client.once("ready", async () => {
   // 재고 현황 체크 및 루프
   const runRestockCheck = () => checkAndNotifyRestock(client, (diffKrw) => notifyPublicRestock(client, diffKrw));
   await runRestockCheck();
-  setInterval(runRestockCheck, 610_000); // 약 10분 10초
+  setInterval(runRestockCheck, 60_000); // 약 10분 10초
 
   // 💡 자동 충전 시스템(Pushbullet) 웹소켓 연결 시작
   startPushbulletStream(client);
