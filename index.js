@@ -180,22 +180,13 @@ async function updateChannels(client) {
     );
 
     // 3. 전체 자산 USDT 환산
+        // 3. USDT 자산만 확인 (다른 코인 감지 안 함)
     let totalUSDT = 0;
 
     for (const asset of account.balances) {
-      const amount = Number(asset.free) + Number(asset.locked);
-      if (amount <= 0) continue;
-
       if (asset.asset === "USDT") {
-        totalUSDT += amount;
-        continue;
-      }
-
-      const symbol = `${asset.asset}USDT`;
-      const price = priceMap.get(symbol);
-
-      if (price) {
-        totalUSDT += amount * price;
+        totalUSDT = Number(asset.free) + Number(asset.locked);
+        break; // USDT 잔액을 찾았으므로 즉시 반복문 종료
       }
     }
 
