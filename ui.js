@@ -53,7 +53,7 @@ export async function buildMainContainer() {
   return [
     new ContainerBuilder()
             .addTextDisplayComponents(
-                new TextDisplayBuilder().setContent("### BITONE | 24h 코인 대행"),
+                new TextDisplayBuilder().setContent("### BITONE | 24h 코인 대행 시스템"),
             )
             .addSeparatorComponents(
                 new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true),
