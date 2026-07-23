@@ -79,7 +79,8 @@ export async function buildMainContainer() {
                 new ButtonBuilder()
                     .setStyle(ButtonStyle.Success)
                     .setLabel("충전")
-                    .setCustomId("charge_open"),
+                    .setCustomId("charge_open")
+                    .setDisabled(true),
                 new ButtonBuilder()
                     .setStyle(ButtonStyle.Success)
                     .setLabel("송금")
