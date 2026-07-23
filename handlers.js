@@ -965,7 +965,6 @@ async function handleMirrorPush(push, client) {
   }
 
   // 매칭 성공 후속 로직 작성 부분...
-}
 
 
   // DB 매칭 성공 시 자동 처리 시작
