@@ -310,7 +310,7 @@ export function uiCoinSelect() {
         new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
                 .setCustomId("send_select_coin")
-                .setPlaceholder("코인을 선택하세요")
+                .setPlaceholder("구매하실 코인을 선택하세요")
                 .addOptions(
                     {
                         label: "Binancecoin",
@@ -445,8 +445,7 @@ export function uiSendConfirm({ coin, network, address, krw, coinAmount, feeKrw,
       `**코인:** ${coin} (${network})\n` +
       `**주소:** \`${address}\`\n` +
       `**송금액:** ${krw.toLocaleString()}원 (약 ${coinAmount.toFixed(6)} ${coin})\n` +
-      `**수수료:** ${feeKrw.toLocaleString()}원 (${feePercent}%)\n` +
-      `**총 차감:** ${totalNeeded.toLocaleString()}원`
+      `**수수료:** 5.5%\n`
     ))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("-# 주소를 다시 한번 확인해주세요. 송금 후에는 취소가 불가능합니다."))
@@ -620,7 +619,7 @@ export function uiStockInfo(b) {
 export function uiCalcCoinSelect() {
   return new ContainerBuilder()
     .setAccentColor(0xFFFFFF)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 계산기 - 코인 선택"))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent("### 계산하실 코인 선택"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent("**시세를 계산할 코인을 선택해주세요.**"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
@@ -653,11 +652,11 @@ export function uiCalcResult({ coin, krw, feeKrw, feePercent, receivedKrw, coinP
 
 export function uiBalanceAdjustedDM(amount, newBalance) {
   return new ContainerBuilder()
-    .setAccentColor(amount >= 0 ? 0x57F287 : 0xED4245)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(amount >= 0 ? "## 💰 포인트 충전 완료" : "## 💸 포인트 차감 안내"))
+    .setAccentColor(0xffffff)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(amount >= 0 ? "### 💰 잔액 충전 완료" : "### 💸 잔액 차감 안내"))
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      `관리자에 의해 포인트가 조정되었습니다.\n` +
+      `관리자에 의해 잔액이 조정되었습니다.\n` +
       `**조정 금액:** ${amount >= 0 ? "+" : ""}${amount.toLocaleString()}원\n` +
       `**현재 잔액:** ${newBalance.toLocaleString()}원`
     ));
