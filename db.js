@@ -1,4 +1,4 @@
-Import Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import crypto from "crypto";
 import dotenv from "dotenv";
 dotenv.config();
