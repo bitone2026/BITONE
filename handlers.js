@@ -417,7 +417,7 @@ async function handleButton(interaction) {
     }
     clearTimeout(entry.timeoutId);
     pendingAutoCharges.delete(chargeId);
-    await interaction.update({ content: "❌ 충전 신청이 취소되었습니다.", ephemeral: true });
+    await interaction.reply({ content: "❌ 충전 신청이 취소되었습니다.", ephemeral: true });
     await sendLog(interaction.client, "info", {
       action: "충전 신청 취소",
       유저: `<@${entry.userId}>`,
