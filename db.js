@@ -373,30 +373,23 @@ export function updateSendTxHash(sendHistoryId, realTxHash) {
  * 수익통계: 지정한 기간(since ~ now) 동안의 수수료 수익 합계.
  * 수익 = 송금 시 뗀 수수료(fee_krw) 합계.
  */
+// [원래 코드 복구용]
 export function getProfitStats(sinceISO, untilISO) {
-  let query = `
+  const row = db.prepare(`
     SELECT
       COUNT(*) as count,
       COALESCE(SUM(krw), 0) as totalKrw,
-      COALESCE(SUM(fee_krw), 0) as totalProfit
+      COALESCE(SUM(fee_krw), 0) as totalFeeKrw
     FROM send_history
-  `;
-  let params = [];
+    WHERE created_at >= ? AND created_at < ?
+  `).get(sinceISO, untilISO);
+  return {
+    count: row?.count ?? 0,
+    totalKrw: row?.totalKrw ?? 0,
+    totalFeeKrw: row?.totalFeeKrw ?? 0,
+  };
+}
 
-  // 1. UI에서 "daily", "weekly" 등으로 요청할 경우 날짜(ISO) 자동 계산
-  if (["daily", "weekly", "monthly", "all"].includes(sinceISO)) {
-    const now = new Date();
-    if (sinceISO === "daily") {
-      sinceISO = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-    } else if (sinceISO === "weekly") {
-      sinceISO = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    } else if (sinceISO === "monthly") {
-      sinceISO = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    } else {
-      sinceISO = null; // all (전체)
-    }
-    untilISO = now.toISOString();
-  }
 
   // 2. 조건에 맞춰 동적으로 WHERE 쿼리 완성
   if (sinceISO && untilISO) {
