@@ -374,20 +374,49 @@ export function updateSendTxHash(sendHistoryId, realTxHash) {
  * 수익 = 송금 시 뗀 수수료(fee_krw) 합계.
  */
 export function getProfitStats(sinceISO, untilISO) {
-  const row = db.prepare(`
+  let query = `
     SELECT
       COUNT(*) as count,
       COALESCE(SUM(krw), 0) as totalKrw,
-      COALESCE(SUM(fee_krw), 0) as totalFeeKrw
+      COALESCE(SUM(fee_krw), 0) as totalProfit
     FROM send_history
-    WHERE created_at >= ? AND created_at < ?
-  `).get(sinceISO, untilISO);
+  `;
+  let params = [];
+
+  // 1. UI에서 "daily", "weekly" 등으로 요청할 경우 날짜(ISO) 자동 계산
+  if (["daily", "weekly", "monthly", "all"].includes(sinceISO)) {
+    const now = new Date();
+    if (sinceISO === "daily") {
+      sinceISO = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    } else if (sinceISO === "weekly") {
+      sinceISO = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    } else if (sinceISO === "monthly") {
+      sinceISO = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    } else {
+      sinceISO = null; // all (전체)
+    }
+    untilISO = now.toISOString();
+  }
+
+  // 2. 조건에 맞춰 동적으로 WHERE 쿼리 완성
+  if (sinceISO && untilISO) {
+    query += ` WHERE created_at >= ? AND created_at <= ?`;
+    params.push(sinceISO, untilISO);
+  } else if (sinceISO) {
+    query += ` WHERE created_at >= ?`;
+    params.push(sinceISO);
+  }
+
+  const row = db.prepare(query).get(...params);
+  
   return {
     count: row?.count ?? 0,
     totalKrw: row?.totalKrw ?? 0,
-    totalFeeKrw: row?.totalFeeKrw ?? 0,
+    totalFeeKrw: row?.totalProfit ?? 0, // UI 호환성을 위해 둘 다 반환
+    totalProfit: row?.totalProfit ?? 0
   };
 }
+
 
 /* ============================================================
    등급 관련
