@@ -133,8 +133,6 @@ async function getCoinGeckoUsdPrice(coin) {
 
 /**
  * 코인 1개당 USD 가격 조회 (1차: 바이낸스, 2차: 코인게코)
- * 🔧 바이낸스가 IP 지역차단 등으로 막히면 모든 코인 시세 조회가 한꺼번에
- * 실패하는 문제가 있어, 코인게코를 2차 폴백으로 추가함.
  */
 async function getCoinUsdPriceRobust(coin) {
   const alias = coin === "BSC" ? "BNB" : coin;
@@ -149,8 +147,6 @@ async function getCoinUsdPriceRobust(coin) {
 
 /**
  * 실시간 달러(USD) → 원화(KRW) 환율 사이트 조회
- * 업비트 KRW-USDT는 암호화폐 시세라 실제 달러 환율과 괴리가 있을 수 있어,
- * 계산기 기능에서는 실제 외환 환율 API를 우선 사용함.
  */
 async function getUsdKrwRate() {
   try {
@@ -160,7 +156,6 @@ async function getUsdKrwRate() {
   } catch (error) {
     console.error("환율 사이트(USD/KRW) 조회 실패:", error.message);
   }
-  // 환율 사이트 실패 시 업비트 KRW-USDT 시세로 대체
   return await getUsdtKrw();
 }
 
@@ -173,8 +168,6 @@ const BINANCE_SYMBOL_MAP = {
 
 /**
  * 계산기 전용 코인 단가(KRW) 조회
- * 업비트에 상장되지 않은 코인이 많아, 바이낸스(실패 시 코인게코)의 코인/USDT 시세와
- * 실시간 달러 환율(USD/KRW)을 곱해 원화 단가를 구함.
  */
 export async function getCalcCoinKrwPrice(coin) {
   const c = coin.trim().toUpperCase();
@@ -201,15 +194,12 @@ export async function getCalcCoinKrwPrice(coin) {
 async function getCoinKrwPrice(coin, usdtKrw, bnbUsdt) {
   const c = coin.trim().toUpperCase();
 
-  // 1. 스테이블코인
   if (STABLECOINS.has(c)) return usdtKrw;
 
-  // 2. BNB 계열 (바이낸스/코인게코 시세 우선)
   if (c === "BNB" || c === "BSC") {
     if (bnbUsdt > 0) return bnbUsdt * usdtKrw;
   }
 
-  // 3. 업비트 상장 코인
   if (UPBIT_MAP[c]) {
     try {
       return await getUpbitPrice(UPBIT_MAP[c]);
@@ -218,7 +208,6 @@ async function getCoinKrwPrice(coin, usdtKrw, bnbUsdt) {
     }
   }
 
-  // 4. Fallback: 바이낸스(실패 시 코인게코) 코인/USDT 시세 × 업비트 USDT/KRW
   try {
     const coinUsd = await getCoinUsdPriceRobust(c);
     return coinUsd * usdtKrw;
@@ -231,16 +220,8 @@ async function getCoinKrwPrice(coin, usdtKrw, bnbUsdt) {
 
 /* ============================================================
    MEXC 거래소 API 헬퍼
-   🔧 FF.io 대신 MEXC에서 직접 USDT로 코인을 매수한 뒤 사용자 지갑으로
-   출금하는 방식으로 전면 교체. .env에 MEXC_API_KEY / MEXC_API_SECRET 필요.
 ============================================================ */
 
-/**
- * encodeURIComponent는 !, *, ', (, ) 를 인코딩하지 않고 그대로 둠.
- * MEXC 출금 네트워크 코드가 "Litecoin(LTC)"처럼 괄호를 포함하는 경우,
- * 이 괄호가 원문 그대로 전송되면서 서명 검증이 어긋나는(700002) 문제가 있어
- * AWS SigV4 등에서 쓰는 방식과 동일하게 추가로 엄격히 인코딩해줌.
- */
 function strictEncode(str) {
   return encodeURIComponent(str).replace(/[!'()*]/g, (c) =>
     "%" + c.charCodeAt(0).toString(16).toUpperCase()
@@ -276,10 +257,6 @@ async function mexcRequest(method, endpoint, params = {}, signed = true) {
   }
 
   const url = `${MEXC_BASE}${endpoint}${queryString ? `?${queryString}` : ""}`;
-  // 🔧 GET/POST 모두 파라미터를 쿼리스트링으로 보내고 실제 body는 항상 비어있음.
-  // MEXC는 body가 비어있을 때 Content-Type이 application/json이 아니면
-  // HTTP 메서드와 무관하게 700013 "Invalid content Type."을 반환하는 것으로 확인됨
-  // (application/x-www-form-urlencoded로 지정해도 동일하게 거부됨).
   const headers = {
     "Content-Type": "application/json",
     ...(apiKey ? { "X-MEXC-APIKEY": apiKey } : {}),
@@ -303,14 +280,8 @@ async function mexcRequest(method, endpoint, params = {}, signed = true) {
   }
 }
 
-/**
- * 내부 코인 코드 → { coin, aliases } (MEXC 통화 코드 및 출금 네트워크 후보)로 변환
- */
-// ... (위쪽 코드 생략, resolveMexcCoin부터 아래만 교체해도 됩니다)
-
 function resolveMexcCoin(toCoin) {
   const c = toCoin.trim().toUpperCase();
-  // USDTBSC인 경우 BEP20(BSC)를 최우선 별칭으로 사용
   if (c === "USDTBSC") return { coin: "USDT", aliases: ["BSC", "BEP20"] };
   if (c === "USDTTRC") return { coin: "USDT", aliases: ["TRC20", "TRX"] };
   if (c === "USDTSOL") return { coin: "USDT", aliases: ["SOL"] };
@@ -320,7 +291,6 @@ function resolveMexcCoin(toCoin) {
 }
 
 async function resolveWithdrawNetwork(coin, aliases) {
-  // 💡 USDT 강제 네트워크 매핑 (디버그 로그에서 보신 DOTASSETHUB 같은 오류 방지)
   if (coin.toUpperCase() === "USDT" && aliases.includes("BEP20(BSC)")) {
      return "BEP20(BSC)";
   }
@@ -344,13 +314,9 @@ async function resolveWithdrawNetwork(coin, aliases) {
   }
   return aliases[0];
 }
-// ... (이하 동일)
-
-
 
 /**
  * MEXC 시장가 매수: USDT로 coin을 즉시 매수
- * quoteOrderQty = 사용할 USDT 금액
  */
 async function mexcMarketBuy(coin, usdtAmount) {
   const symbol = `${coin.toUpperCase()}USDT`;
@@ -373,7 +339,6 @@ async function mexcMarketBuy(coin, usdtAmount) {
 
   let executedQty = parseFloat(data.executedQty || "0");
 
-  // 즉시 체결 정보가 비어있는 경우 잠시 후 주문 상태를 재조회
   if (!executedQty && data.orderId) {
     await new Promise(r => setTimeout(r, 1500));
     const order = await mexcRequest("get", "/api/v3/order", { symbol, orderId: data.orderId }, true);
@@ -389,14 +354,6 @@ async function mexcMarketBuy(coin, usdtAmount) {
 
 /**
  * MEXC 출금 신청
- * 🔧 공식 문서 기준으로 두 가지를 수정:
- * 1. 엔드포인트: "/api/v3/capital/withdraw/apply"(구버전, 폐지 예정) →
- * "/api/v3/capital/withdraw"(신규)
- * 2. 파라미터명: "network" → "netWork"(대문자 W, 신규 필드명)
- * 매수/잔고조회 등 기존에 잘 작동하던 요청들은 건드리지 않고, 이 함수만
- * 별도로 자체 서명 로직을 사용함. netWork 값에 "BEP20(BSC)"처럼 괄호가
- * 포함될 수 있어(MEXC 공식 예시에도 존재), encodeURIComponent가 놓치는
- * 특수문자까지 인코딩하는 strictEncode를 이 요청에만 적용함.
  */
 async function mexcWithdraw(coin, network, address, amount) {
   const apiKey = process.env.MEXC_API_KEY?.trim();
@@ -410,11 +367,10 @@ async function mexcWithdraw(coin, network, address, amount) {
     address,
     amount: amount.toString(),
     netWork: network,
-    network,           // 문서상 예시/파라미터 표가 불일치하는 경우를 대비해 둘 다 전송
+    network,
     timestamp: Date.now(),
     recvWindow: 5000,
   };
- // 💡 디버그 로그 추가 구간
   console.log("-----------------------------------------");
   console.log("DEBUG: 출금 요청 파라미터:", JSON.stringify(params, null, 2));
   console.log("-----------------------------------------");
@@ -458,55 +414,82 @@ function getExplorerLink(coin, hash) {
     default: return `https://bscscan.com/tx/${hash}`;
   }
 }
+export { getExplorerLink };
+
+/**
+ * MEXC 출금내역 조회 (GET /api/v3/capital/withdraw/history).
+ * 🔧 [신규] 출금 신청 직후 반환되는 id는 MEXC 내부 출금ID일 뿐, 실제
+ * 블록체인 TXID(txId)가 아님. txId는 거래소가 실제로 온체인에
+ * 브로드캐스트한 뒤에야 채워짐.
+ */
+async function getMexcWithdrawRecord(withdrawId) {
+  const data = await mexcRequest("get", "/api/v3/capital/withdraw/history", { limit: 50 }, true);
+  if (!Array.isArray(data)) return null;
+  return data.find(r => String(r.id) === String(withdrawId)) || null;
+}
+
+/**
+ * 🔧 [신규] 출금 신청 직후 진짜 TXID가 채워질 때까지 백그라운드에서 주기적으로
+ * 출금내역을 조회함(폴링). Discord 인터랙션을 붙잡아두지 않도록 fire-and-forget
+ * 방식으로 동작하며, 찾으면 onFound 콜백으로 알려줌.
+ */
+export function pollMexcWithdrawTx(withdrawId, { onFound, maxAttempts = 40, intervalMs = 15000 } = {}) {
+  let attempts = 0;
+  const tick = async () => {
+    attempts++;
+    try {
+      const record = await getMexcWithdrawRecord(withdrawId);
+      if (record?.txId) {
+        if (typeof onFound === "function") await onFound(record.txId, record);
+        return; // 찾았으니 폴링 종료
+      }
+    } catch (e) {
+      console.error(`출금내역 폴링 실패 (${withdrawId}, 시도 ${attempts}/${maxAttempts}):`, e.message);
+    }
+    if (attempts < maxAttempts) {
+      setTimeout(tick, intervalMs);
+    } else {
+      console.warn(`⚠️ 출금 ${withdrawId}의 실제 TXID를 ${maxAttempts}회 시도 후에도 찾지 못했습니다.`);
+    }
+  };
+  tick();
+}
 
 /* ============================================================
    통합 스왑 송금 프로세스 (MEXC 기반)
-   fromCoin: 더 이상 사용하지 않음 (항상 MEXC의 USDT 잔고에서 출발) — 기존
-             handlers.js 호출부와의 호환을 위해 파라미터만 유지.
-   toCoin:   사용자가 받고 싶은 코인
-   krwAmount: 이미 "수수료(5%) + 현재 김프"가 차감된 원화 금액
-              (handlers.js에서 feeRate = kimpRate + 0.05 로 미리 계산해서 넘김)
-   toAddress: 사용자의 수신 지갑 주소
-
-   흐름: krwAmount(원화, 수수료·김프 차감된 금액) → USDT 환산
-        → MEXC에서 그 USDT만큼 toCoin 시장가 매수 → 매수한 수량 그대로 출금
+   🔧 [수정] 반환하는 hash는 여전히 MEXC 내부 출금ID임(즉시 알 수 있는 값은
+   이것뿐이라서). 실제 TXID는 processSwapTransfer 호출 이후 handlers.js에서
+   pollMexcWithdrawTx()로 별도 확인해야 함.
 ============================================================ */
 export async function processSwapTransfer(fromCoin, toCoin, krwAmount, toAddress) {
   if (!toAddress) {
     throw new Error("수신 지갑 주소가 전달되지 않았습니다.");
   }
 
-  // --- [수정] LTC 코인만 수수료율 0.39% 반영 ---
   const coin = toCoin.trim().toUpperCase();
   let feeRate = 0;
 
   if (coin.startsWith("BNB") || coin.startsWith("BSC")) {
     feeRate = 0.019;
-}
-
-if (coin.startsWith("LTC")) {
-    feeRate = 0.023;
-}
-
-if (coin.startsWith("TRX")) {
-    feeRate = 0.016;
-}
-
-if (coin.startsWith("SOL")) {
-    feeRate = 0.007;
-}
-
-if (coin.startsWith("USDT")) {
-    feeRate = 0.012;
-}
-
-  // 최종 적용할 금액 = 기존 krwAmount * (1 - 수수료율)
-  const finalKrwAmount = krwAmount * (1 - feeRate);
-  
-  if (feeRate !== 0) {
-      console.log(`[송금] ${coin} 수수료 적용: +${(feeRate * 100).toFixed(2)}% (적용 전: ₩${krwAmount.toLocaleString()} → 적용 후: ₩${finalKrwAmount.toLocaleString()})`);
   }
-  // --- [수정] 수수료 적용 끝 ---
+  if (coin.startsWith("LTC")) {
+    feeRate = 0.023;
+  }
+  if (coin.startsWith("TRX")) {
+    feeRate = 0.016;
+  }
+  if (coin.startsWith("SOL")) {
+    feeRate = 0.007;
+  }
+  if (coin.startsWith("USDT")) {
+    feeRate = 0.012;
+  }
+
+  const finalKrwAmount = krwAmount * (1 - feeRate);
+
+  if (feeRate !== 0) {
+    console.log(`[송금] ${coin} 수수료 적용: +${(feeRate * 100).toFixed(2)}% (적용 전: ₩${krwAmount.toLocaleString()} → 적용 후: ₩${finalKrwAmount.toLocaleString()})`);
+  }
 
   const { coin: mexcCoin, aliases } = resolveMexcCoin(toCoin);
 
@@ -518,7 +501,6 @@ if (coin.startsWith("USDT")) {
   let receivedQty;
 
   if (STABLECOINS.has(coin)) {
-    // 목표 코인이 스테이블코인(USDT 계열)이면 매수 단계 없이 그대로 사용
     console.log(`[2/4] 목표 코인이 USDT 계열이라 매수 단계를 건너뜁니다.`);
     receivedQty = usdtAmount;
   } else {
@@ -534,20 +516,19 @@ if (coin.startsWith("USDT")) {
 
   console.log(`[4/4] MEXC 출금 신청 중... (${receivedQty} ${mexcCoin} → ${toAddress})`);
   const { withdrawId } = await mexcWithdraw(mexcCoin, network, toAddress, receivedQty);
-  console.log(`👉 출금 신청 완료 (ID: ${withdrawId})`);
+  console.log(`👉 출금 신청 완료 (ID: ${withdrawId}) — 실제 TXID는 별도로 폴링해서 확인해야 함`);
 
   return {
-    hash: withdrawId,
-    explorer: getExplorerLink(toCoin, withdrawId),
-    receivedQty, // 🔧 [추가] 실제로 매수/출금된 진짜 수량 (추정치가 아님) - 로그/기록에 이 값을 써야 정확함
+    hash: withdrawId,      // ⚠️ 아직 MEXC 내부 출금ID일 뿐, 실제 TXID가 아님
+    explorer: null,        // 진짜 TXID를 알기 전까진 explorer 링크도 만들 수 없음
+    receivedQty,
+    withdrawId,
+    coin: toCoin,
   };
 }
 
 /* ============================================================
-   환율 조회 — 바이낸스 BNB/USDT 및 업비트 KRW/USDT 연동
-   🔧 [수정] 예전엔 호출할 때마다 SUPPORTED_COINS 전체(10개)를 다 조회해서
-   API 요청이 낭비되고 있었음(대부분의 호출은 코인 1개만 필요함).
-   이제 neededCoins로 명시한 코인만 추가 조회함 (기본값: 없음 = BTC 김프/USDT만).
+   환율 조회
 ============================================================ */
 export async function getRates(neededCoins = []) {
   const [cgRes, upbitBtcRes, binanceBnbRes] = await Promise.allSettled([
@@ -567,7 +548,6 @@ export async function getRates(neededCoins = []) {
     btcKimp: 0
   };
 
-  // 명시적으로 요청한 코인만 추가 조회 (USDT/BNB는 이미 위에서 채워졌으므로 제외)
   const toFetch = [...new Set(neededCoins)].filter(c => c !== "USDT" && c !== "BNB" && c !== "USDTBSC");
   if (toFetch.length > 0) {
     const results = await Promise.all(
@@ -650,21 +630,12 @@ export async function sendLog(client, type, fields) {
 
 /* ============================================================
    입고 알림 (MEXC USDT 잔고 증가 감지)
-   관리자 로그(LOG_CHANNEL_ID)는 여기서 그대로 처리하고,
-   유저 대상 공개 입고알림은 onRestock 콜백으로 넘겨서
-   handlers.js 쪽에서 별도 채널(PUBLIC_STOCK_CHANNEL_ID)에
-   Container UI로 보내도록 분리함.
-   🔧 [수정] 기존엔 _prevUsdtKrw가 단순 메모리 변수라 Railway 재시작마다
-   초기화되어, 재배포가 잦으면 입고가 있어도 "새 기준값"으로만 조용히
-   흡수되고 알림이 거의 안 뜨는 문제가 있었음. db.js의 config 테이블에
-   기준값을 저장해서 재시작에도 이어지도록 함(이벤트로그 백업으로 자동 복구됨).
 ============================================================ */
 let _prevUsdtKrw = null;
 let _prevUsdtKrwLoaded = false;
 
 export async function checkAndNotifyRestock(client, onRestock) {
   try {
-    // 최초 1회만 DB에서 마지막 기준값을 불러옴 (그 이후엔 메모리 값 사용)
     if (!_prevUsdtKrwLoaded) {
       const stored = getConfig("prev_usdt_krw");
       _prevUsdtKrw = stored !== null ? parseFloat(stored) : null;
@@ -676,13 +647,13 @@ export async function checkAndNotifyRestock(client, onRestock) {
 
     if (_prevUsdtKrw === null) {
       _prevUsdtKrw = b.usdtKrw;
-      setConfig("prev_usdt_krw", b.usdtKrw); // 최초 기준값은 반드시 영속화
+      setConfig("prev_usdt_krw", b.usdtKrw);
       console.log("[재고체크] 최초 실행 - 기준값만 설정하고 이번엔 알림 없이 넘어감");
       return;
     }
 
     const diff = Math.round(b.usdtKrw - _prevUsdtKrw);
-    console.log(`[재고체크] 차이: ${diff >= 0 ? "+" : ""}₩${diff.toLocaleString()} (임계값: 1,000원 이상일 때 알림)`);
+    console.log(`[재고체크] 차이: ${diff >= 0 ? "+" : ""}₩${diff.toLocaleString()} (임계값: 10,000원 이상일 때 알림)`);
     if (diff >= 10000) {
       const ch = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
       if (ch) await ch.send(`📦 MEXC USDT 입고 감지: +₩${diff.toLocaleString()} (총 ₩${Math.round(b.usdtKrw).toLocaleString()})`);
@@ -690,11 +661,9 @@ export async function checkAndNotifyRestock(client, onRestock) {
       if (typeof onRestock === "function") {
         await onRestock(diff, Math.round(b.usdtKrw));
       }
-      setConfig("prev_usdt_krw", b.usdtKrw); // 실제 입고가 감지된 시점의 기준값만 영속화 (매 tick 로그 스팸 방지)
+      setConfig("prev_usdt_krw", b.usdtKrw);
     }
 
-    _prevUsdtKrw = b.usdtKrw; // 메모리상의 기준값은 매 tick마다 갱신
+    _prevUsdtKrw = b.usdtKrw;
   } catch (e) { console.error("입고 알림 체크 실패:", e.message); }
 }
-
-
