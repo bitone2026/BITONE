@@ -1,4 +1,4 @@
-import { CHAIN_MAP } from "./ui.js";
+import { CHAIN_MAP } from "./ui.js"; // Import 대문자 오타 수정
 import WebSocket from 'ws';
 import {
   ModalBuilder, TextInputBuilder, TextInputStyle,
@@ -328,7 +328,6 @@ async function handleCommand(interaction) {
     await interaction.reply({ components: [uiLimitAdjusted(targetId, limit, false)], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
-
   if (commandName === "자동충전한도") {
     const target = interaction.options.getUser("유저");
     const amount = interaction.options.getInteger("금액");
@@ -353,6 +352,11 @@ async function handleCommand(interaction) {
         await interaction.reply({ content: `✅ <@${target.id}> 님의 자동 충전 1회 한도가 **${amount.toLocaleString()}원**으로 설정되었습니다.`, ephemeral: true });
       }
     }
+    return;
+  }
+  // 💡 [추가] 수익통계 명령어 핸들러 추가
+  if (commandName === "수익통계") {
+    await interaction.reply({ components: [uiProfitStatsMenu()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
     return;
   }
 }
@@ -382,6 +386,24 @@ async function handleButton(interaction) {
 
   if (id === "grade_info_open") {
     await interaction.reply({ components: [uiGradeInfo()], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+    return;
+  }
+
+  // 💡 [추가] 수익통계 기간별 버튼 핸들러
+  if (id.startsWith("profit_stats_")) {
+    const period = id.replace("profit_stats_", ""); // daily, weekly, monthly
+    const stats = getProfitStats(period);
+    
+    const periodLabels = {
+      daily: "일간",
+      weekly: "주간",
+      monthly: "월간"
+    };
+    
+    await interaction.update({ 
+      components: [uiProfitStats(periodLabels[period], stats)], 
+      flags: MessageFlags.IsComponentsV2 
+    });
     return;
   }
 
