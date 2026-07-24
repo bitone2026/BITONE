@@ -386,9 +386,13 @@ export function getProfitStats(sinceISO, untilISO) {
   // 1. UI에서 "daily", "weekly" 등으로 요청할 경우 날짜(ISO) 자동 계산
   if (["daily", "weekly", "monthly", "all"].includes(sinceISO)) {
     const now = new Date();
-    if (sinceISO === "daily") {
-      sinceISO = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-    } else if (sinceISO === "weekly") {
+    // 자정 기준 통계로 변경하고 싶을 경우의 예시
+if (sinceISO === "daily") {
+  // 오늘 00:00 (KST) 기준 UTC 시간 구하기
+  const todayKST = new Date(now.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  sinceISO = new Date(`${todayKST}T00:00:00+09:00`).toISOString();
+}
+ else if (sinceISO === "weekly") {
       sinceISO = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
     } else if (sinceISO === "monthly") {
       sinceISO = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
