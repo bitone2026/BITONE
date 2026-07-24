@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+Import Database from "better-sqlite3";
 import crypto from "crypto";
 import dotenv from "dotenv";
 dotenv.config();
@@ -373,7 +373,6 @@ export function updateSendTxHash(sendHistoryId, realTxHash) {
  * 수익통계: 지정한 기간(since ~ now) 동안의 수수료 수익 합계.
  * 수익 = 송금 시 뗀 수수료(fee_krw) 합계.
  */
-// [원래 코드 복구용]
 export function getProfitStats(sinceISO, untilISO) {
   const row = db.prepare(`
     SELECT
@@ -389,27 +388,6 @@ export function getProfitStats(sinceISO, untilISO) {
     totalFeeKrw: row?.totalFeeKrw ?? 0,
   };
 }
-
-
-  // 2. 조건에 맞춰 동적으로 WHERE 쿼리 완성
-  if (sinceISO && untilISO) {
-    query += ` WHERE created_at >= ? AND created_at <= ?`;
-    params.push(sinceISO, untilISO);
-  } else if (sinceISO) {
-    query += ` WHERE created_at >= ?`;
-    params.push(sinceISO);
-  }
-
-  const row = db.prepare(query).get(...params);
-  
-  return {
-    count: row?.count ?? 0,
-    totalKrw: row?.totalKrw ?? 0,
-    totalFeeKrw: row?.totalProfit ?? 0, // UI 호환성을 위해 둘 다 반환
-    totalProfit: row?.totalProfit ?? 0
-  };
-}
-
 
 /* ============================================================
    등급 관련
