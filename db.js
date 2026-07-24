@@ -383,7 +383,7 @@ export function getProfitStats(sinceISO, untilISO) {
   `;
   let params = [];
 
-    // 1. UI에서 "daily", "weekly" 등으로 요청할 경우 날짜(ISO) 자동 계산
+  // 1. UI에서 "daily", "weekly" 등으로 요청할 경우 날짜(ISO) 자동 계산
   if (["daily", "weekly", "monthly", "all"].includes(sinceISO)) {
     const now = new Date();
     
@@ -416,7 +416,6 @@ export function getProfitStats(sinceISO, untilISO) {
     // untilISO는 현재 시각(UTC) 그대로 사용 (DB의 created_at이 UTC이므로)
     untilISO = now.toISOString();
   }
-
 
   // 2. 조건에 맞춰 동적으로 WHERE 쿼리 완성
   if (sinceISO && untilISO) {
@@ -452,12 +451,12 @@ export const GRADE_TIERS = [
   { threshold: 10_000_000, roleId: "1523181324184322132", name: "EMERALD", lounge: true },
   { threshold:  8_000_000, roleId: "1523180335322632202", name: "DIAMOND",  lounge: true },
   { threshold:  5_000_000, roleId: "1523180037791289374", name: "RUBY",  lounge: false },
-  { threshold:  4_000_000, roleId: "1523179745385119784", name: "SSPPHIRE",  lounge: false },
+  { threshold:  4_000_000, roleId: "1523179745385119784", name: "SAPPHIRE",  lounge: false },
   { threshold:  3_000_000, roleId: "1523179433958051961", name: "JADE",  lounge: false },
   { threshold:  2_000_000, roleId: "1523179067690455141", name: "PLATINUM",  lounge: false },
   { threshold:  1_000_000, roleId: "1523178341492854914", name: "GOLD",  lounge: false },
   { threshold:    500_000, roleId: "1523177478577848350", name: "SILVER",  lounge: false },
-  { threshold:    100_000, roleId: "1523176786681139230", name: "BONZE",  lounge: false },
+  { threshold:    100_000, roleId: "1523176786681139230", name: "BRONZE",  lounge: false },
   { threshold:     10_000, roleId: "1523174407835484311", name: "WOOD",  lounge: false },
 ];
 
