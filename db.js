@@ -383,24 +383,40 @@ export function getProfitStats(sinceISO, untilISO) {
   `;
   let params = [];
 
-  // 1. UI에서 "daily", "weekly" 등으로 요청할 경우 날짜(ISO) 자동 계산
+    // 1. UI에서 "daily", "weekly" 등으로 요청할 경우 날짜(ISO) 자동 계산
   if (["daily", "weekly", "monthly", "all"].includes(sinceISO)) {
     const now = new Date();
-    // 자정 기준 통계로 변경하고 싶을 경우의 예시
-if (sinceISO === "daily") {
-  // 오늘 00:00 (KST) 기준 UTC 시간 구하기
-  const todayKST = new Date(now.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  sinceISO = new Date(`${todayKST}T00:00:00+09:00`).toISOString();
-}
- else if (sinceISO === "weekly") {
-      sinceISO = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    
+    // 현재 시간을 KST 기준으로 보정 (UTC + 9)
+    const kstDate = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+    
+    if (sinceISO === "daily") {
+      // 오늘 00:00 (KST)
+      const todayKST = kstDate.toISOString().slice(0, 10);
+      sinceISO = new Date(`${todayKST}T00:00:00+09:00`).toISOString();
+      
+    } else if (sinceISO === "weekly") {
+      // 이번 주 월요일 00:00 (KST)
+      const day = kstDate.getUTCDay(); // 0: 일요일, 1: 월요일 ... 6: 토요일
+      const diffToMonday = day === 0 ? 6 : day - 1; // 월요일부터 며칠 지났는지 계산
+      
+      const mondayKST = new Date(kstDate.getTime() - (diffToMonday * 24 * 60 * 60 * 1000));
+      const mondayStr = mondayKST.toISOString().slice(0, 10);
+      sinceISO = new Date(`${mondayStr}T00:00:00+09:00`).toISOString();
+      
     } else if (sinceISO === "monthly") {
-      sinceISO = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      // 이번 달 1일 00:00 (KST)
+      const yearMonth = kstDate.toISOString().slice(0, 7); // YYYY-MM
+      sinceISO = new Date(`${yearMonth}-01T00:00:00+09:00`).toISOString();
+      
     } else {
       sinceISO = null; // all (전체)
     }
+    
+    // untilISO는 현재 시각(UTC) 그대로 사용 (DB의 created_at이 UTC이므로)
     untilISO = now.toISOString();
   }
+
 
   // 2. 조건에 맞춰 동적으로 WHERE 쿼리 완성
   if (sinceISO && untilISO) {
