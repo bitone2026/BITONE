@@ -265,7 +265,7 @@ export async function handleCodeModal(interaction) {
           .addTextDisplayComponents(new TextDisplayBuilder().setContent("## ✅ 인증 완료"))
           .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
           .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `**이제 코인대행을 이용하실수 있습니다.**`
+            `**이제 이용하실수 있습니다.**`
           )),
       ],
       flags: MessageFlags.IsComponentsV2, ephemeral: true,
